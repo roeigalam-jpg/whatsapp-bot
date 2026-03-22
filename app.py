@@ -15,8 +15,8 @@ GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTA
 NOTIFY_PHONE        = "972527066110"
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = "היי! מעוניין לפתוח קריאת שירות/התקנה? 😊"
-ANTHROPIC_KEY       = "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"
-CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
+import os
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
 # ─── נתונים ───────────────────────────────────────────────────
