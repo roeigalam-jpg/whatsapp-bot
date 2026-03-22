@@ -916,11 +916,6 @@ load();setInterval(load,4000);
 </html>"""
 
 
-# הפעל polling אוטומטית בעת טעינת הקוד (עובד עם Gunicorn)
-_polling_thread = threading.Thread(target=polling_loop, daemon=True)
-_polling_thread.start()
-
-
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD)
@@ -1000,7 +995,9 @@ def polling_loop():
         time.sleep(3)
 
 
+# הפעל polling אוטומטית (עובד גם עם Gunicorn)
+_polling_thread = threading.Thread(target=polling_loop, daemon=True)
+_polling_thread.start()
+
 if __name__ == "__main__":
-    t = threading.Thread(target=polling_loop, daemon=True)
-    t.start()
     app.run(debug=True, port=5000)
