@@ -275,7 +275,8 @@ def webhook():
         def parse_body():
             msg_type_raw = msg_data.get("typeMessage", "textMessage")
             type_map = {
-                "textMessage":     ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
+                "textMessage":          ("text", lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
+                "extendedTextMessage": ("text", lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
                 "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
                 "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
                 "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
@@ -988,7 +989,8 @@ def polling_loop():
                     def parse_body():
                         msg_type_raw = msg_data.get("typeMessage", "textMessage")
                         type_map = {
-                            "textMessage":     ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
+                            "textMessage":          ("text", lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
+                            "extendedTextMessage": ("text", lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
                             "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
                             "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
                             "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
