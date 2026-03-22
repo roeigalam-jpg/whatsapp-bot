@@ -226,41 +226,62 @@ def handle_message(phone, body, msg_type="text"):
 def webhook():
     try:
         data = request.get_json(force=True)
-        if not data or data.get("typeWebhook") != "incomingMessageReceived":
+        if not data:
             return "ok"
 
-        msg_data  = data.get("messageData", {})
-        sender    = data.get("senderData", {})
-        phone     = sender.get("chatId", "").replace("@c.us", "")
+        webhook_type = data.get("typeWebhook", "")
+        msg_data = data.get("messageData", {})
+        sender   = data.get("senderData", {})
 
-        if not phone or is_group(phone + "@c.us"):
-            return "ok"
+        def get_phone():
+            return sender.get("chatId", "").replace("@c.us", "")
 
-        # זיהוי סוג הודעה
-        msg_type_raw = msg_data.get("typeMessage", "textMessage")
-        type_map = {
-            "textMessage":     ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","")),
-            "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
-            "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
-            "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
-            "documentMessage": ("document", lambda d: "[שלח מסמך]"),
-            "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
-            "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
-            "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
-        }
-        msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
-        body_text = extractor(msg_data) or ""
+        def parse_body():
+            msg_type_raw = msg_data.get("typeMessage", "textMessage")
+            type_map = {
+                "textMessage":     ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","")),
+                "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
+                "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
+                "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
+                "documentMessage": ("document", lambda d: "[שלח מסמך]"),
+                "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
+                "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
+                "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
+            }
+            msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
+            return msg_type, extractor(msg_data) or ""
 
-        if not body_text:
-            return "ok"
+        # הודעה נכנסת מלקוח
+        if webhook_type == "incomingMessageReceived":
+            phone = get_phone()
+            if not phone or is_group(phone + "@c.us"):
+                return "ok"
+            msg_type, body_text = parse_body()
+            if not body_text:
+                return "ok"
+            # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
+            if phone not in bot_enabled:
+                bot_enabled[phone] = False
+            add_to_history(phone, "client", body_text, msg_type)
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+            # ענה רק אם הבוט מופעל ידנית
+            if bot_enabled.get(phone, False) and global_bot_on:
+                reply = handle_message(phone, body_text, msg_type)
+                add_to_history(phone, "bot", reply)
+                send_message(phone, reply)
 
-        add_to_history(phone, "client", body_text, msg_type)
-        sessions.setdefault(phone, {"step": "active", "data": {}})
-
-        if bot_enabled.get(phone, False) and global_bot_on:
-            reply = handle_message(phone, body_text, msg_type)
-            add_to_history(phone, "bot", reply)
-            send_message(phone, reply)
+        # הודעה יוצאת (שלחת מהוואטסאפ או מהפורטל)
+        elif webhook_type == "outgoingMessageReceived":
+            phone = get_phone()
+            if not phone or is_group(phone + "@c.us"):
+                return "ok"
+            _, body_text = parse_body()
+            if not body_text:
+                return "ok"
+            if phone not in bot_enabled:
+                bot_enabled[phone] = False
+            add_to_history(phone, "bot", body_text, "text")
+            sessions.setdefault(phone, {"step": "active", "data": {}})
 
     except Exception as e:
         print(f"[Webhook] error: {e}")
