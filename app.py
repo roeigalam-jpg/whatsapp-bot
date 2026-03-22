@@ -232,6 +232,7 @@ def webhook():
         webhook_type = data.get("typeWebhook", "")
         msg_data = data.get("messageData", {})
         sender   = data.get("senderData", {})
+        print(f"[Webhook] type={webhook_type} sender={sender} data={data}", flush=True)
 
         def get_phone():
             return sender.get("chatId", "").replace("@c.us", "")
