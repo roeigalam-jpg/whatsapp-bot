@@ -5,6 +5,7 @@ import re
 import json
 import threading
 import time
+import os
 
 app = Flask(__name__)
 
@@ -15,8 +16,8 @@ GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTA
 NOTIFY_PHONE        = "972527066110"
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = "היי! מעוניין לפתוח קריאת שירות/התקנה? 😊"
-import os
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
+CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
 # ─── נתונים ───────────────────────────────────────────────────
