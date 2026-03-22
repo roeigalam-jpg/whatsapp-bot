@@ -387,12 +387,14 @@ def api_toggle(phone):
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
         sent = send_message(phone, GREETING_MSG)
-        if sent:
-            greeting_sent[phone] = True
-            add_to_history(phone, "bot", GREETING_MSG)
-            sessions.setdefault(phone, {"step": "active", "data": {}})
+        greeting_sent[phone] = True
+        add_to_history(phone, "bot", GREETING_MSG)
+        sessions.setdefault(phone, {"step": "active", "data": {}})
+        save_data()
+        print(f"[Toggle] greeting sent to {phone}, result={sent}", flush=True)
     if not now_active:
         cancel_reminder(phone)
+    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
