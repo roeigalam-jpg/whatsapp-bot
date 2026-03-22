@@ -916,6 +916,11 @@ load();setInterval(load,4000);
 </html>"""
 
 
+# הפעל polling אוטומטית בעת טעינת הקוד (עובד עם Gunicorn)
+_polling_thread = threading.Thread(target=polling_loop, daemon=True)
+_polling_thread.start()
+
+
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD)
@@ -924,5 +929,78 @@ def dashboard():
 def mobile():
     return render_template_string(MOBILE)
 
+def polling_loop():
+    """משאל את Green API כל 3 שניות להודעות חדשות"""
+    url_receive = f"{GREEN_API_URL}/receiveNotification/{GREEN_API_TOKEN}"
+    url_delete  = f"{GREEN_API_URL}/deleteNotification/{GREEN_API_TOKEN}"
+
+    while True:
+        try:
+            r = requests.get(url_receive, timeout=10)
+            if r.status_code == 200 and r.text and r.text != "null":
+                data = r.json()
+                if data:
+                    receipt_id = data.get("receiptId")
+                    body = data.get("body", {})
+                    webhook_type = body.get("typeWebhook", "")
+                    msg_data = body.get("messageData", {})
+                    sender   = body.get("senderData", {})
+
+                    print(f"[Polling] type={webhook_type} sender={sender}", flush=True)
+
+                    def get_phone():
+                        return sender.get("chatId", "").replace("@c.us", "")
+
+                    def parse_body():
+                        msg_type_raw = msg_data.get("typeMessage", "textMessage")
+                        type_map = {
+                            "textMessage":     ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","")),
+                            "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
+                            "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
+                            "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
+                            "documentMessage": ("document", lambda d: "[שלח מסמך]"),
+                            "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
+                            "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
+                            "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
+                        }
+                        msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
+                        return msg_type, extractor(msg_data) or ""
+
+                    if webhook_type == "incomingMessageReceived":
+                        phone = get_phone()
+                        if phone and not is_group(phone + "@c.us"):
+                            msg_type, body_text = parse_body()
+                            if body_text:
+                                if phone not in bot_enabled:
+                                    bot_enabled[phone] = False
+                                add_to_history(phone, "client", body_text, msg_type)
+                                sessions.setdefault(phone, {"step": "active", "data": {}})
+                                if bot_enabled.get(phone, False) and global_bot_on:
+                                    reply = handle_message(phone, body_text, msg_type)
+                                    add_to_history(phone, "bot", reply)
+                                    send_message(phone, reply)
+
+                    elif webhook_type == "outgoingMessageReceived":
+                        phone = get_phone()
+                        if phone and not is_group(phone + "@c.us"):
+                            _, body_text = parse_body()
+                            if body_text:
+                                if phone not in bot_enabled:
+                                    bot_enabled[phone] = False
+                                add_to_history(phone, "bot", body_text, "text")
+                                sessions.setdefault(phone, {"step": "active", "data": {}})
+
+                    # מחק את ההודעה מהתור
+                    if receipt_id:
+                        requests.delete(f"{url_delete}/{receipt_id}", timeout=5)
+
+        except Exception as e:
+            print(f"[Polling] error: {e}", flush=True)
+
+        time.sleep(3)
+
+
 if __name__ == "__main__":
+    t = threading.Thread(target=polling_loop, daemon=True)
+    t.start()
     app.run(debug=True, port=5000)
