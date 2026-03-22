@@ -30,6 +30,40 @@ global_bot_on = True
 last_bot_msg_time = {}   # phone -> timestamp of last bot message
 reminder_timers   = {}   # phone -> timer thread
 
+DATA_FILE = "data.json"
+
+def save_data():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "sessions": sessions,
+                "service_calls": service_calls,
+                "bot_enabled": bot_enabled,
+                "chat_history": chat_history,
+                "greeting_sent": greeting_sent,
+                "global_bot_on": global_bot_on
+            }, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Save] error: {e}", flush=True)
+
+def load_data():
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                sessions      = d.get("sessions", {})
+                service_calls = d.get("service_calls", [])
+                bot_enabled   = d.get("bot_enabled", {})
+                chat_history  = d.get("chat_history", {})
+                greeting_sent = d.get("greeting_sent", {})
+                global_bot_on = d.get("global_bot_on", True)
+            print("[Load] data loaded successfully", flush=True)
+    except Exception as e:
+        print(f"[Load] error: {e}", flush=True)
+
+load_data()
+
 SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
 
 הסגנון שלך:
@@ -203,6 +237,7 @@ def handle_message(phone, body, msg_type="text"):
         })
         send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         reset_session(phone)
+        save_data()
         reply = (
             f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
             f"נציג יצור איתך קשר בהקדם.\n"
@@ -265,11 +300,13 @@ def webhook():
                 bot_enabled[phone] = False
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
+            save_data()
             # ענה רק אם הבוט מופעל ידנית
             if bot_enabled.get(phone, False) and global_bot_on:
                 reply = handle_message(phone, body_text, msg_type)
                 add_to_history(phone, "bot", reply)
                 send_message(phone, reply)
+                save_data()
 
         # הודעה יוצאת (שלחת מהוואטסאפ או מהפורטל)
         elif webhook_type == "outgoingMessageReceived":
@@ -283,6 +320,7 @@ def webhook():
                 bot_enabled[phone] = False
             add_to_history(phone, "bot", body_text, "text")
             sessions.setdefault(phone, {"step": "active", "data": {}})
+            save_data()
 
     except Exception as e:
         print(f"[Webhook] error: {e}")
@@ -332,6 +370,7 @@ def api_chats():
 def api_global_toggle():
     global global_bot_on
     global_bot_on = not global_bot_on
+    save_data()
     return jsonify({"global_bot_on": global_bot_on})
 
 
@@ -970,10 +1009,12 @@ def polling_loop():
                                     bot_enabled[phone] = False
                                 add_to_history(phone, "client", body_text, msg_type)
                                 sessions.setdefault(phone, {"step": "active", "data": {}})
+                                save_data()
                                 if bot_enabled.get(phone, False) and global_bot_on:
                                     reply = handle_message(phone, body_text, msg_type)
                                     add_to_history(phone, "bot", reply)
                                     send_message(phone, reply)
+                                    save_data()
 
                     elif webhook_type == "outgoingMessageReceived":
                         phone = get_phone()
@@ -984,6 +1025,7 @@ def polling_loop():
                                     bot_enabled[phone] = False
                                 add_to_history(phone, "bot", body_text, "text")
                                 sessions.setdefault(phone, {"step": "active", "data": {}})
+                                save_data()
 
                     # מחק את ההודעה מהתור
                     if receipt_id:
