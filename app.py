@@ -387,12 +387,14 @@ def api_toggle(phone):
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
         sent = send_message(phone, GREETING_MSG)
-        if sent:
-            greeting_sent[phone] = True
-            add_to_history(phone, "bot", GREETING_MSG)
-            sessions.setdefault(phone, {"step": "active", "data": {}})
+        greeting_sent[phone] = True
+        add_to_history(phone, "bot", GREETING_MSG)
+        sessions.setdefault(phone, {"step": "active", "data": {}})
+        save_data()
+        print(f"[Toggle] greeting sent to {phone}, result={sent}", flush=True)
     if not now_active:
         cancel_reminder(phone)
+    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
@@ -1039,25 +1041,9 @@ def polling_loop():
         time.sleep(3)
 
 
-def keep_alive():
-    """מונע מהשרת להיכבות"""
-    while True:
-        try:
-            requests.get("https://whatsapp-bot-4vhq.onrender.com/ping", timeout=5)
-        except:
-            pass
-        time.sleep(240)
-
-@app.route("/ping")
-def ping():
-    return "ok"
-
-# הפעל polling ו-keep-alive
+# הפעל polling אוטומטית (עובד גם עם Gunicorn)
 _polling_thread = threading.Thread(target=polling_loop, daemon=True)
 _polling_thread.start()
 
-_keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
-_keepalive_thread.start()
-
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, port=5000)
