@@ -972,6 +972,7 @@ def polling_loop():
     while True:
         try:
             r = requests.get(url_receive, timeout=10)
+            print(f"[Polling] status={r.status_code} text={r.text[:100]}", flush=True)
             if r.status_code == 200 and r.text and r.text != "null":
                 data = r.json()
                 if data:
