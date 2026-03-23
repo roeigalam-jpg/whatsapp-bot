@@ -66,15 +66,18 @@ def load_data():
 load_data()
 
 def get_greeting():
-    hour = datetime.now().hour
+    from datetime import timezone as tz
+    import datetime as dt
+    israel_time = datetime.now(tz.utc) + __import__('datetime').timedelta(hours=3)
+    hour = israel_time.hour
     if 5 <= hour < 12:
         return "בוקר טוב! 🌅"
     elif 12 <= hour < 17:
         return "צהריים טובים! ☀️"
-    elif 17 <= hour < 21:
+    elif 17 <= hour < 22:
         return "ערב טוב! 🌆"
     else:
-        return "שלום! 🌙"
+        return "לילה טוב! 🌙"
 
 SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
 
@@ -85,11 +88,12 @@ SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חבר
 
 סגנון:
 - עברית יומיומית, חמה, נעימה וטבעית
-- תמיד שאל "מה שלומך?" או "מה נשמע?" בתחילת שיחה חדשה
-- ענייני אבל לא קר — הראה אכפתיות אמיתית
+- הודעות קצרות וטבעיות — לא יותר מ-2-3 שורות בכל פעם
+- חמים ואכפתי אבל לא מוגזם
+- אל תשלח ברכת בוקר/ערב — ההודעה הראשונה כבר כוללת ברכה
 - נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
-- אם הלקוח מתאר תקלה — שאל: "אוי, זה לא נעים! מה שמך, כתובת הבריכה וטלפון?"
-- אם שלח הקלטה קולית או וידאו — הגב: "תודה על ההודעה! 😊 כדי שנוכל לטפל בך, אשמח לקבל: שמך, כתובת הבריכה וטלפון"
+- אם הלקוח מתאר תקלה — שאל: "אוי, לא נעים 😕 מה שמך, כתובת הבריכה וטלפון?"
+- אם שלח הקלטה קולית או וידאו — הגב: "תודה! 😊 שלח לי גם בטקסט: שמך, כתובת הבריכה וטלפון"
 
 הפרטים שצריך לאסוף:
 1. שם
@@ -465,6 +469,33 @@ def api_global_toggle():
     return jsonify({"global_bot_on": global_bot_on})
 
 
+@app.route("/api/sync-chats", methods=["POST"])
+def api_sync_chats():
+    """סנכרן שיחות מ-Green API"""
+    try:
+        url = f"{GREEN_API_URL}/getChats/{GREEN_API_TOKEN}"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            return jsonify({"ok": False, "error": f"Green API error: {r.status_code}"})
+        chats_data = r.json()
+        count = 0
+        for chat in chats_data:
+            chat_id = chat.get("id", "")
+            if "@c.us" not in chat_id or "@g.us" in chat_id:
+                continue
+            phone = chat_id.replace("@c.us", "")
+            if phone not in chat_history:
+                chat_history[phone] = []
+            if phone not in bot_enabled:
+                bot_enabled[phone] = False
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+            count += 1
+        save_data()
+        return jsonify({"ok": True, "synced": count})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @app.route("/api/enable-all", methods=["POST"])
 def api_enable_all():
     """הפעל בוט לכל השיחות הקיימות"""
@@ -498,7 +529,7 @@ def api_toggle(phone):
     bot_enabled[phone] = not was_active
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
-        msg = f"{get_greeting()} איך אפשר לעזור?"
+        msg = f"{get_greeting()} מה נשמע? 😊"
         sent = send_message(phone, msg)
         greeting_sent[phone] = True
         add_to_history(phone, "bot", msg)
@@ -664,6 +695,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
   <div class="hdr-mid">
     <input class="search-box" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
     <button class="btn-global on" id="global-btn" onclick="toggleGlobal()" title="הפעל/כבה מענה חדש">🟢 מענה פעיל</button>
+    <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן שיחות</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ הפעל לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
   </div>
@@ -791,6 +823,12 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function syncChats(){
+  const r=await fetch('/api/sync-chats',{method:'POST'});
+  const d=await r.json();
+  if(d.ok){await load();alert('✅ סונכרנו '+d.synced+' שיחות!');}
+  else alert('שגיאה: '+d.error);
+}
 async function enableAll(){
   if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
   await fetch('/api/enable-all',{method:'POST'});
@@ -1066,6 +1104,12 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function syncChats(){
+  const r=await fetch('/api/sync-chats',{method:'POST'});
+  const d=await r.json();
+  if(d.ok){await load();alert('✅ סונכרנו '+d.synced+' שיחות!');}
+  else alert('שגיאה: '+d.error);
+}
 async function enableAll(){
   if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
   await fetch('/api/enable-all',{method:'POST'});
