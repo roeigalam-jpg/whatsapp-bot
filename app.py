@@ -18,13 +18,6 @@ ADMIN_PHONE         = "972502580803"  # רועי — מנהל
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = None  # דינמי לפי שעה
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
-GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI  = "https://whatsapp-bot-4vhq.onrender.com/google-callback"
-GOOGLE_SCOPES        = "https://www.googleapis.com/auth/contacts.readonly"
-
-# Google OAuth tokens (in-memory)
-google_tokens = {}
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
@@ -81,20 +74,16 @@ ADMIN_SYSTEM_PROMPT = """אתה מקס — העוזר האישי של רועי, 
 - עוזר בכל מה שרועי מבקש, גם אם זה לא קשור לבריכות
 - מכיר את העסק — בריכות שחייה, התקנה, תחזוקה, שיפוץ
 
-יכולות:
-- פתיחת קריאות שירות
-- שליחת הודעות וואטסאפ ללקוחות/עובדים
-- חיפוש אנשי קשר מגוגל
-- עזרה בניסוח, ייעוץ עסקי, כל שאלה
+יכולות עסקיות:
+- פתיחת קריאת שירות ללקוח
+- מידע על קריאות פתוחות
+- עזרה בניסוח הודעות ללקוחות/עובדים
+- ייעוץ בניהול העסק
+- כל שאלה אחרת
 
-כשרועי מבקש לפתוח קריאה:
+כשרועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
   {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-כשרועי מבקש לשלוח הודעה למספר:
-  {"action":"send_message","phone":"...","message":"..."}
-כשרועי מבקש לחפש איש קשר בגוגל:
-  {"action":"search_contact","query":"שם לחיפוש"}
-אחרת:
-  {"action":"continue","message":"תשובה לרועי"}"""
+אחרת — החזר: {"action":"continue","message":"תשובה לרועי"}"""
 
 
 def get_greeting():
@@ -300,23 +289,6 @@ def handle_message(phone, body, msg_type="text"):
                 f"לקריאה נוספת — כתוב לי בכל עת 😊"
             )
         return reply
-
-    if action == "send_message" and is_admin:
-        target_phone = result.get("phone", "")
-        msg_to_send = result.get("message", "")
-        if target_phone and msg_to_send:
-            if target_phone.startswith("0"):
-                target_phone = "972" + target_phone[1:]
-            sent = send_message(target_phone, msg_to_send)
-            return f"✅ הודעה נשלחה ל-{target_phone}" if sent else f"❌ שגיאה בשליחה ל-{target_phone}"
-        return "❌ חסרים פרטים לשליחה"
-
-    if action == "search_contact" and is_admin:
-        query = result.get("query", "")
-        if query:
-            contacts = search_google_contacts(query)
-            return f"\U0001f50d תוצאות עבור '{query}':\n\n{contacts}"
-        return "❌ לא צוין שם לחיפוש"
 
     if action == "cancelled":
         reset_session(phone)
@@ -1047,103 +1019,6 @@ load();setInterval(load,4000);
 </html>"""
 
 
-# ─── Google OAuth ─────────────────────────────────────────────
-@app.route("/google-auth")
-def google_auth():
-    """התחל תהליך OAuth עם גוגל"""
-    auth_url = (
-        f"https://accounts.google.com/o/oauth2/v2/auth?"
-        f"client_id={GOOGLE_CLIENT_ID}&"
-        f"redirect_uri={requests.utils.quote(GOOGLE_REDIRECT_URI)}&"
-        f"response_type=code&"
-        f"scope={requests.utils.quote(GOOGLE_SCOPES)}&"
-        f"access_type=offline&"
-        f"prompt=consent"
-    )
-    return f'<meta http-equiv="refresh" content="0;url={auth_url}">'
-
-
-@app.route("/google-callback")
-def google_callback():
-    """קבל token מגוגל"""
-    code = request.args.get("code")
-    if not code:
-        return "שגיאה: לא התקבל קוד", 400
-    try:
-        r = requests.post("https://oauth2.googleapis.com/token", data={
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": GOOGLE_REDIRECT_URI,
-            "grant_type": "authorization_code"
-        })
-        tokens = r.json()
-        google_tokens["access_token"] = tokens.get("access_token")
-        google_tokens["refresh_token"] = tokens.get("refresh_token")
-        print(f"[Google] tokens received: {list(tokens.keys())}", flush=True)
-        return "<h2>✅ חשבון גוגל חובר בהצלחה!</h2><p>עכשיו מקס יכול לחפש אנשי קשר עבורך.</p>"
-    except Exception as e:
-        print(f"[Google] callback error: {e}", flush=True)
-        return f"שגיאה: {e}", 500
-
-
-def refresh_google_token():
-    """רענן access token"""
-    try:
-        r = requests.post("https://oauth2.googleapis.com/token", data={
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "refresh_token": google_tokens.get("refresh_token"),
-            "grant_type": "refresh_token"
-        })
-        data = r.json()
-        if "access_token" in data:
-            google_tokens["access_token"] = data["access_token"]
-            return True
-    except Exception as e:
-        print(f"[Google] refresh error: {e}", flush=True)
-    return False
-
-
-def search_google_contacts(query):
-    """חפש איש קשר בגוגל לפי שם"""
-    token = google_tokens.get("access_token")
-    if not token:
-        return "❌ חשבון גוגל לא מחובר. לחץ כאן לחיבור: https://whatsapp-bot-4vhq.onrender.com/google-auth"
-    try:
-        r = requests.get(
-            f"https://people.googleapis.com/v1/people:searchContacts",
-            params={"query": query, "readMask": "names,phoneNumbers,emailAddresses", "pageSize": 5},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        if r.status_code == 401:
-            if refresh_google_token():
-                return search_google_contacts(query)
-            return "❌ טוקן פג תוקף — נסה לחבר מחדש: https://whatsapp-bot-4vhq.onrender.com/google-auth"
-        data = r.json()
-        results = data.get("results", [])
-        if not results:
-            return f"לא נמצא איש קשר בשם '{query}'"
-        lines = []
-        for p in results:
-            person = p.get("person", {})
-            names = person.get("names", [{}])
-            name = names[0].get("displayName", "ללא שם") if names else "ללא שם"
-            phones = person.get("phoneNumbers", [])
-            emails = person.get("emailAddresses", [])
-            line = f"👤 {name}"
-            for ph in phones:
-                line += f"\n📞 {ph.get('value','')}"
-            for em in emails:
-                line += f"\n✉️ {em.get('value','')}"
-            lines.append(line)
-        return "\n\n".join(lines)
-    except Exception as e:
-        print(f"[Google Contacts] error: {e}", flush=True)
-        return f"שגיאה בחיפוש: {e}"
-
-
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD)
@@ -1209,13 +1084,24 @@ def polling_loop():
                     elif webhook_type == "outgoingMessageReceived":
                         phone = get_phone()
                         if phone and not is_group(phone + "@c.us"):
-                            _, body_text = parse_body()
+                            msg_type, body_text = parse_body()
                             if body_text:
-                                if phone not in bot_enabled:
-                                    bot_enabled[phone] = False
-                                add_to_history(phone, "bot", body_text, "text")
-                                sessions.setdefault(phone, {"step": "active", "data": {}})
-                                save_data()
+                                is_admin_msg = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
+                                if is_admin_msg and bot_enabled.get(phone, True) and global_bot_on:
+                                    add_to_history(phone, "client", body_text, msg_type)
+                                    sessions.setdefault(phone, {"step": "active", "data": {}})
+                                    if phone not in bot_enabled:
+                                        bot_enabled[phone] = True
+                                    reply = handle_message(phone, body_text, msg_type)
+                                    add_to_history(phone, "bot", reply)
+                                    send_message(phone, reply)
+                                    save_data()
+                                else:
+                                    if phone not in bot_enabled:
+                                        bot_enabled[phone] = False
+                                    add_to_history(phone, "bot", body_text, "text")
+                                    sessions.setdefault(phone, {"step": "active", "data": {}})
+                                    save_data()
 
                     # מחק את ההודעה מהתור
                     if receipt_id:
