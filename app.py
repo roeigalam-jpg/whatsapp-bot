@@ -14,8 +14,9 @@ GREEN_API_INSTANCE  = "7107555828"
 GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
+ADMIN_PHONE         = "972529532110"  # רועי — מנהל
 BUSINESS_NAME       = "שירות לקוחות"
-GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
+GREETING_MSG        = None  # דינמי לפי שעה
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
@@ -64,24 +65,57 @@ def load_data():
 
 load_data()
 
-SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
+ADMIN_SYSTEM_PROMPT = """אתה מקס — עוזר אישי של רועי, מנהל חברת בריכות שחייה אקוופולקו.
+אתה עוזר לרועי לנהל את העסק שלו דרך וואטסאפ.
 
-הסגנון שלך:
-- עברית יומיומית, חמה וטבעית — כמו בן אדם אמיתי
-- קצר וענייני, לא רובוטי ולא פורמלי מדי
-- הגב בהתאם להקשר — אם הלקוח כותב "שלום" תגיב בחמימות, אם הוא מתאר תקלה תתמקד בה מיד
-- אל תשאל את כל השאלות בבת אחת — שאל שאלה אחת בכל פעם בצורה טבעית
+מה שאתה יכול לעשות:
+1. לפתוח קריאת שירות — כשרועי אומר "פתח קריאה ל..." תאסוף פרטים ותפתח
+2. לדווח על קריאות פתוחות — "כמה קריאות פתוחות?" / "מה הסטטוס?"
+3. לשלוח הודעה ללקוח — "שלח ל-05X... הודעה: ..."
+4. כל שאלה עסקית אחרת
 
-הפרטים שצריך לאסוף (בהדרגה, בתוך השיחה):
+סגנון:
+- קצר, ישיר, יעיל — רועי עסוק
+- עברית טבעית
+- אם רועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
+  {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
+- אחרת — החזר: {"action":"continue","message":"תשובה לרועי"}"""
+
+
+def get_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "בוקר טוב! 🌅"
+    elif 12 <= hour < 17:
+        return "צהריים טובים! ☀️"
+    elif 17 <= hour < 21:
+        return "ערב טוב! 🌆"
+    else:
+        return "שלום! 🌙"
+
+SYSTEM_PROMPT = """אתה מקס — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
+אתה מנהל שיחות וואטסאפ עם לקוחות בעברית טבעית וידידותית.
+
+זהות:
+- שמך מקס
+- אם שואלים מי אתה — "אני מקס, העוזר הדיגיטלי של רועי מאקוופולקו 😊"
+- פתח שיחה עם ברכה מתאימה לשעה (בוקר טוב / צהריים טובים / ערב טוב)
+
+סגנון:
+- עברית יומיומית, חמה וטבעית
+- ענייני ומהיר — אל תמשוך שיחה
+- נסה לאסוף את כל הפרטים ב-1-2 שאלות מרוכזות, לא פינג פונג ארוך
+- אם הלקוח מתאר תקלה — מיד שאל: "מה שמך, כתובת הבריכה וטלפון ליצירת קשר?"
+
+הפרטים שצריך לאסוף:
 1. שם
 2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או משהו אחר
+3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
 4. תיאור הבעיה או הבקשה
 5. טלפון ליצירת קשר
 
 כללים:
-- אם הלקוח מתאר בעיה בבריכה — הגב עם הבנה ואז שאל את מה שחסר
-- אם שלח תמונה — הגב על זה טבעית והמשך לאסוף פרטים
+- אם שלח תמונה או הקלטה — הגב טבעית והמשך לאסוף פרטים
 - אם לא רוצה שירות — סגור בנימוס
 - אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
 - אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
@@ -142,7 +176,7 @@ def build_notify_message(phone, data):
     ])
 
 
-def ask_claude(history, user_msg, msg_type="text"):
+def ask_claude(history, user_msg, msg_type="text", is_admin=False):
     try:
         messages = []
         for h in history[-14:]:
@@ -168,6 +202,7 @@ def ask_claude(history, user_msg, msg_type="text"):
         else:
             messages.append({"role": "user", "content": current_msg})
 
+        system = ADMIN_SYSTEM_PROMPT if is_admin else SYSTEM_PROMPT
         resp = requests.post(
             CLAUDE_API_URL,
             headers={
@@ -178,7 +213,7 @@ def ask_claude(history, user_msg, msg_type="text"):
             json={
                 "model": CLAUDE_MODEL,
                 "max_tokens": 600,
-                "system": SYSTEM_PROMPT,
+                "system": system,
                 "messages": messages
             },
             timeout=20
@@ -219,8 +254,9 @@ def schedule_reminder(phone, last_msg):
 def handle_message(phone, body, msg_type="text"):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
+    is_admin = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
 
-    result = ask_claude(history, body, msg_type)
+    result = ask_claude(history, body, msg_type, is_admin=is_admin)
     action = result.get("action", "continue")
 
     if action == "open_call":
@@ -235,15 +271,19 @@ def handle_message(phone, body, msg_type="text"):
             "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "status": "ממתינה לטיפול"
         })
-        send_message(NOTIFY_PHONE, build_notify_message(phone, result))
+        if not is_admin:
+            send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         reset_session(phone)
         save_data()
-        reply = (
-            f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
-            f"נציג יצור איתך קשר בהקדם.\n"
-            f"תודה שפנית ל{BUSINESS_NAME}! 🙏\n\n"
-            f"לקריאה נוספת — כתוב לי בכל עת 😊"
-        )
+        if is_admin:
+            reply = f"✅ קריאה נפתחה בהצלחה עבור {result.get('name','-')}!"
+        else:
+            reply = (
+                f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
+                f"נציג יצור איתך קשר בהקדם.\n"
+                f"תודה שפנית ל{BUSINESS_NAME}! 🙏\n\n"
+                f"לקריאה נוספת — כתוב לי בכל עת 😊"
+            )
         return reply
 
     if action == "cancelled":
@@ -386,9 +426,10 @@ def api_toggle(phone):
     bot_enabled[phone] = not was_active
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
-        sent = send_message(phone, GREETING_MSG)
+        msg = f"{get_greeting()} איך אפשר לעזור?"
+        sent = send_message(phone, msg)
         greeting_sent[phone] = True
-        add_to_history(phone, "bot", GREETING_MSG)
+        add_to_history(phone, "bot", msg)
         sessions.setdefault(phone, {"step": "active", "data": {}})
         save_data()
         print(f"[Toggle] greeting sent to {phone}, result={sent}", flush=True)
