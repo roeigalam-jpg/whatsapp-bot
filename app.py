@@ -1209,9 +1209,28 @@ def polling_loop():
         time.sleep(3)
 
 
-# הפעל polling אוטומטית (עובד גם עם Gunicorn)
+def keep_alive():
+    """שמור את השרת ער כדי שלא יכבה"""
+    while True:
+        try:
+            requests.get("https://whatsapp-bot-4vhq.onrender.com/ping", timeout=5)
+        except:
+            pass
+        time.sleep(240)  # כל 4 דקות
+
+
+@app.route("/ping")
+def ping():
+    return "ok"
+
+
+# הפעל polling ו-keep-alive
 _polling_thread = threading.Thread(target=polling_loop, daemon=True)
 _polling_thread.start()
+print("[Polling] thread started", flush=True)
+
+_keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
+_keepalive_thread.start()
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
