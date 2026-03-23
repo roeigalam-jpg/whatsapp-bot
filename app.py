@@ -84,11 +84,12 @@ SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חבר
 - פתח תמיד עם ברכה לפי שעה (בוקר טוב / צהריים טובים / ערב טוב)
 
 סגנון:
-- עברית יומיומית, חמה וטבעית
-- ענייני ומהיר — אל תמשוך שיחה
+- עברית יומיומית, חמה, נעימה וטבעית
+- תמיד שאל "מה שלומך?" או "מה נשמע?" בתחילת שיחה חדשה
+- ענייני אבל לא קר — הראה אכפתיות אמיתית
 - נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
-- אם הלקוח מתאר תקלה — שאל מיד: "מה שמך, כתובת הבריכה וטלפון?"
-- אם שלח הקלטה קולית או וידאו — הגב: "תודה! כדי לטפל בך, אשמח לקבל: שמך, כתובת הבריכה וטלפון ליצירת קשר"
+- אם הלקוח מתאר תקלה — שאל: "אוי, זה לא נעים! מה שמך, כתובת הבריכה וטלפון?"
+- אם שלח הקלטה קולית או וידאו — הגב: "תודה על ההודעה! 😊 כדי שנוכל לטפל בך, אשמח לקבל: שמך, כתובת הבריכה וטלפון"
 
 הפרטים שצריך לאסוף:
 1. שם
@@ -464,6 +465,28 @@ def api_global_toggle():
     return jsonify({"global_bot_on": global_bot_on})
 
 
+@app.route("/api/enable-all", methods=["POST"])
+def api_enable_all():
+    """הפעל בוט לכל השיחות הקיימות"""
+    count = 0
+    for phone in list(chat_history.keys()):
+        if not bot_enabled.get(phone, False):
+            bot_enabled[phone] = True
+            count += 1
+    save_data()
+    return jsonify({"ok": True, "enabled": count})
+
+
+@app.route("/api/disable-all", methods=["POST"])
+def api_disable_all():
+    """כבה בוט לכל השיחות"""
+    for phone in list(bot_enabled.keys()):
+        bot_enabled[phone] = False
+        cancel_reminder(phone)
+    save_data()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/global-status")
 def api_global_status():
     return jsonify({"global_bot_on": global_bot_on})
@@ -560,6 +583,8 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global{border:none;border-radius:8px;padding:6px 14px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
+.btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
+.btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -638,7 +663,9 @@ input:checked+.tsl:before{transform:translateX(-15px)}
   <div class="logo"><div class="logo-icon">🔧</div>מרכז שירות</div>
   <div class="hdr-mid">
     <input class="search-box" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
-    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()" title="הפעל/כבה את כל הבוטים">🟢 בוט פעיל לכולם</button>
+    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()" title="הפעל/כבה מענה חדש">🟢 מענה פעיל</button>
+    <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ הפעל לכולם</button>
+    <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -764,6 +791,17 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function enableAll(){
+  if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
+  await fetch('/api/enable-all',{method:'POST'});
+  await load();
+  alert('✅ הבוט הופעל לכל השיחות!');
+}
+async function disableAll(){
+  if(!confirm('לכבות בוט לכל השיחות?'))return;
+  await fetch('/api/disable-all',{method:'POST'});
+  await load();
+}
 async function resendLast(phone){
   const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
@@ -809,6 +847,8 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);heigh
 .btn-global{border:none;border-radius:18px;padding:5px 12px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
+.btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
+.btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
 .search-bar{padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .search-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:14px;outline:none}
 .search-input:focus{border-color:var(--accent)}
@@ -881,7 +921,8 @@ input:checked+.tsl:before{transform:translateX(-17px)}
 <div class="hdr">
   <div class="hdr-icon">🔧</div>
   <div class="hdr-title">בוט שירות</div>
-  <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 כולם פעילים</button>
+  <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 פעיל</button>
+  <button style="border:none;border-radius:16px;padding:5px 10px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent)" onclick="enableAll()">⚡ לכולם</button>
 </div>
 <div class="search-bar">
   <input class="search-input" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
@@ -1025,6 +1066,17 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function enableAll(){
+  if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
+  await fetch('/api/enable-all',{method:'POST'});
+  await load();
+  alert('✅ הבוט הופעל לכל השיחות!');
+}
+async function disableAll(){
+  if(!confirm('לכבות בוט לכל השיחות?'))return;
+  await fetch('/api/disable-all',{method:'POST'});
+  await load();
+}
 async function updateStatus(id,status){
   await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
