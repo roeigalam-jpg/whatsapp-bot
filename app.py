@@ -14,8 +14,9 @@ GREEN_API_INSTANCE  = "7107555828"
 GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
+BOSS_PHONE          = "972502580803"  # רועי — הבוס
 BUSINESS_NAME       = "שירות לקוחות"
-GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
+GREETING_MSG        = None  # דינמי לפי שעה
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
@@ -64,24 +65,40 @@ def load_data():
 
 load_data()
 
-SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
+def get_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "בוקר טוב! 🌅"
+    elif 12 <= hour < 17:
+        return "צהריים טובים! ☀️"
+    elif 17 <= hour < 21:
+        return "ערב טוב! 🌆"
+    else:
+        return "שלום! 🌙"
 
-הסגנון שלך:
-- עברית יומיומית, חמה וטבעית — כמו בן אדם אמיתי
-- קצר וענייני, לא רובוטי ולא פורמלי מדי
-- הגב בהתאם להקשר — אם הלקוח כותב "שלום" תגיב בחמימות, אם הוא מתאר תקלה תתמקד בה מיד
-- אל תשאל את כל השאלות בבת אחת — שאל שאלה אחת בכל פעם בצורה טבעית
+SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
 
-הפרטים שצריך לאסוף (בהדרגה, בתוך השיחה):
+זהות:
+- שמך גל
+- אם שואלים מי אתה: "אני גל, העוזר הדיגיטלי של רועי מאקוופולקו 😊"
+- פתח תמיד עם ברכה לפי שעה (בוקר טוב / צהריים טובים / ערב טוב)
+
+סגנון:
+- עברית יומיומית, חמה וטבעית
+- ענייני ומהיר — אל תמשוך שיחה
+- נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
+- אם הלקוח מתאר תקלה — שאל מיד: "מה שמך, כתובת הבריכה וטלפון?"
+- אם שלח הקלטה קולית או וידאו — הגב: "תודה! כדי לטפל בך, אשמח לקבל: שמך, כתובת הבריכה וטלפון ליצירת קשר"
+
+הפרטים שצריך לאסוף:
 1. שם
 2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או משהו אחר
+3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
 4. תיאור הבעיה או הבקשה
 5. טלפון ליצירת קשר
 
 כללים:
-- אם הלקוח מתאר בעיה בבריכה — הגב עם הבנה ואז שאל את מה שחסר
-- אם שלח תמונה — הגב על זה טבעית והמשך לאסוף פרטים
+- אם שלח תמונה, הקלטה קולית, וידאו — הגב בנימוס והמשך לאסוף פרטים
 - אם לא רוצה שירות — סגור בנימוס
 - אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
 - אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
@@ -89,6 +106,22 @@ SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחי�
 - אם ביטל — החזר: {"action":"cancelled"}
 - אחרת — החזר: {"action":"continue","message":"הודעה ללקוח"}
 - אל תציין מספר קריאה בשיחה"""
+
+
+BOSS_SYSTEM_PROMPT = """אתה גל — עוזר אישי חכם של רועי, בעל חברת בריכות שחייה אקוופולקו.
+רועי הוא הבוס שלך. עזור לו בכל דבר — עסקי, אישי, טכני, יצירתי, או כל תחום אחר.
+
+אישיות:
+- חכם, ישיר, יעיל
+- עברית טבעית וקצרה — רועי עסוק
+- עונה על הכל ללא הגבלה — רועי הבוס
+
+כשרועי מבקש לפתוח קריאת שירות:
+  {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
+כשרועי מבקש לשלוח הודעה:
+  {"action":"send_message","phone":"...","message":"..."}
+אחרת:
+  {"action":"continue","message":"תשובה לרועי"}"""
 
 
 def send_message(phone, text):
@@ -142,7 +175,7 @@ def build_notify_message(phone, data):
     ])
 
 
-def ask_claude(history, user_msg, msg_type="text"):
+def ask_claude(history, user_msg, msg_type="text", is_boss=False):
     try:
         messages = []
         for h in history[-14:]:
@@ -168,6 +201,7 @@ def ask_claude(history, user_msg, msg_type="text"):
         else:
             messages.append({"role": "user", "content": current_msg})
 
+        system = BOSS_SYSTEM_PROMPT if is_boss else SYSTEM_PROMPT
         resp = requests.post(
             CLAUDE_API_URL,
             headers={
@@ -177,8 +211,8 @@ def ask_claude(history, user_msg, msg_type="text"):
             },
             json={
                 "model": CLAUDE_MODEL,
-                "max_tokens": 600,
-                "system": SYSTEM_PROMPT,
+                "max_tokens": 1000,
+                "system": system,
                 "messages": messages
             },
             timeout=20
@@ -216,11 +250,54 @@ def schedule_reminder(phone, last_msg):
     reminder_timers[phone] = t
 
 
-def handle_message(phone, body, msg_type="text"):
+def transcribe_audio(audio_url):
+    """מתמלל הקלטה קולית באמצעות Claude"""
+    try:
+        # הורד את הקובץ
+        r = requests.get(audio_url, timeout=15)
+        if r.status_code != 200:
+            return None
+        import base64
+        audio_b64 = base64.b64encode(r.content).decode()
+        resp = requests.post(
+            CLAUDE_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 500,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "תמלל את ההקלטה הזו לעברית. החזר רק את הטקסט המתומלל ללא הסברים."},
+                        {"type": "document", "source": {"type": "base64", "media_type": "audio/ogg", "data": audio_b64}}
+                    ]
+                }]
+            },
+            timeout=30
+        )
+        return resp.json()["content"][0]["text"].strip()
+    except Exception as e:
+        print(f"[Transcribe] error: {e}", flush=True)
+        return None
+
+
+def handle_message(phone, body, msg_type="text", audio_url=None):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
+    is_boss = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
 
-    result = ask_claude(history, body, msg_type)
+    # תמלול הקלטה אם יש URL
+    if msg_type == "audio" and audio_url and is_boss:
+        transcribed = transcribe_audio(audio_url)
+        if transcribed:
+            body = f"[הקלטה קולית — תמלול: {transcribed}]"
+            add_to_history(phone, "client", f"🎤 {transcribed}", "audio")
+
+    result = ask_claude(history, body, msg_type, is_boss=is_boss)
     action = result.get("action", "continue")
 
     if action == "open_call":
@@ -245,6 +322,16 @@ def handle_message(phone, body, msg_type="text"):
             f"לקריאה נוספת — כתוב לי בכל עת 😊"
         )
         return reply
+
+    if action == "send_message" and is_boss:
+        target = result.get("phone", "")
+        msg_to_send = result.get("message", "")
+        if target and msg_to_send:
+            if target.startswith("0"):
+                target = "972" + target[1:]
+            sent = send_message(target, msg_to_send)
+            return f"✅ נשלח ל-{target}" if sent else "❌ שגיאה בשליחה"
+        return "❌ חסרים פרטים"
 
     if action == "cancelled":
         reset_session(phone)
@@ -280,6 +367,7 @@ def webhook():
                 "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
                 "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
                 "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
+                "callMessage":     ("text",     lambda d: "[התקשר/ה בשיחת וואטסאפ]"),
                 "documentMessage": ("document", lambda d: "[שלח מסמך]"),
                 "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
                 "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
@@ -298,11 +386,12 @@ def webhook():
                 return "ok"
             # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
             if phone not in bot_enabled:
-                bot_enabled[phone] = False
+                is_boss_phone = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
+                bot_enabled[phone] = is_boss_phone  # בוס — פעיל אוטומטית
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
             save_data()
-            # ענה רק אם הבוט מופעל ידנית
+            # ענה אם הבוט פעיל
             if bot_enabled.get(phone, False) and global_bot_on:
                 reply = handle_message(phone, body_text, msg_type)
                 add_to_history(phone, "bot", reply)
@@ -386,13 +475,15 @@ def api_toggle(phone):
     bot_enabled[phone] = not was_active
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
-        sent = send_message(phone, GREETING_MSG)
-        if sent:
-            greeting_sent[phone] = True
-            add_to_history(phone, "bot", GREETING_MSG)
-            sessions.setdefault(phone, {"step": "active", "data": {}})
+        msg = f"{get_greeting()} איך אפשר לעזור?"
+        sent = send_message(phone, msg)
+        greeting_sent[phone] = True
+        add_to_history(phone, "bot", msg)
+        sessions.setdefault(phone, {"step": "active", "data": {}})
+        save_data()
     if not now_active:
         cancel_reminder(phone)
+    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
@@ -547,7 +638,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
   <div class="logo"><div class="logo-icon">🔧</div>מרכז שירות</div>
   <div class="hdr-mid">
     <input class="search-box" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
-    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()">🟢 פעיל</button>
+    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()" title="הפעל/כבה את כל הבוטים">🟢 בוט פעיל לכולם</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -790,7 +881,7 @@ input:checked+.tsl:before{transform:translateX(-17px)}
 <div class="hdr">
   <div class="hdr-icon">🔧</div>
   <div class="hdr-title">בוט שירות</div>
-  <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 פעיל</button>
+  <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 כולם פעילים</button>
 </div>
 <div class="search-bar">
   <input class="search-input" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
