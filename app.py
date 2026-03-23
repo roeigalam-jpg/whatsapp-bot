@@ -269,7 +269,7 @@ def schedule_reminder(phone, last_msg):
 def handle_message(phone, body, msg_type="text"):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
-    is_admin = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
+    is_admin = phone in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
 
     result = ask_claude(history, body, msg_type, is_admin=is_admin)
     action = result.get("action", "continue")
@@ -369,7 +369,7 @@ def webhook():
                 return "ok"
             # תמיד רשום בפורטל
             if phone not in bot_enabled:
-                is_admin = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
+                is_admin = phone in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
                 bot_enabled[phone] = is_admin  # מנהל — פעיל אוטומטית
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
@@ -393,7 +393,7 @@ def webhook():
             # אם זו הודעה שרועי שלח לעצמו (לצ'אט עם הבוט)
             # chatId של שיחה עם עצמך = המספר שלך
             sender_id = sender.get("chatId", "").replace("@c.us","")
-            is_admin_msg = (sender_id == ADMIN_PHONE or sender_id == ADMIN_PHONE.replace("972","0",1))
+            is_admin_msg = sender_id in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
 
             if is_admin_msg and bot_enabled.get(phone, False) and global_bot_on:
                 # זו הודעה מרועי לעצמו — הבוט יענה כעוזר
