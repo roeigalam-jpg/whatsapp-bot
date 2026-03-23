@@ -294,6 +294,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
     is_boss = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
+    print(f"[Handle] phone={phone} is_boss={is_boss}", flush=True)
 
     # תמלול הקלטה אם יש URL
     if msg_type == "audio" and audio_url and is_boss:
@@ -390,8 +391,8 @@ def webhook():
             if not body_text:
                 return "ok"
             # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
+            is_boss_phone = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
             if phone not in bot_enabled:
-                is_boss_phone = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
                 bot_enabled[phone] = is_boss_phone  # בוס — פעיל אוטומטית
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
@@ -450,14 +451,16 @@ def api_chats():
             "step":          sessions.get(phone, {}).get("step", "active")
         })
 
-    # מיין: בוט פעיל קודם, אחר כך לפי זמן
+    # מיין: לפי זמן הודעה אחרונה — הכי חדש ראשון
     def sort_key(c):
-        active = 0 if c["bot_active"] else 1
-        t = c["last_message"]["time"] if c["last_message"] else "00:00"
-        return (active, t)
+        history = c.get("history", [])
+        if history:
+            # קח את הזמן האחרון בהיסטוריה
+            last_time = history[-1].get("time", "00:00")
+            return last_time
+        return "00:00"
 
-    result.sort(key=sort_key, reverse=False)
-    result = list(reversed(result))
+    result.sort(key=sort_key, reverse=True)
     return jsonify(result)
 
 
@@ -474,10 +477,13 @@ def api_sync_chats():
     """סנכרן שיחות מ-Green API"""
     try:
         url = f"{GREEN_API_URL}/getChats/{GREEN_API_TOKEN}"
+        print(f"[Sync] fetching chats from {url}", flush=True)
         r = requests.get(url, timeout=15)
+        print(f"[Sync] status={r.status_code} response={r.text[:200]}", flush=True)
         if r.status_code != 200:
-            return jsonify({"ok": False, "error": f"Green API error: {r.status_code}"})
+            return jsonify({"ok": False, "error": f"Green API error: {r.status_code} - {r.text[:100]}"})
         chats_data = r.json()
+        print(f"[Sync] got {len(chats_data)} chats", flush=True)
         count = 0
         for chat in chats_data:
             chat_id = chat.get("id", "")
@@ -830,13 +836,10 @@ async function syncChats(){
   else alert('שגיאה: '+d.error);
 }
 async function enableAll(){
-  if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
   await fetch('/api/enable-all',{method:'POST'});
   await load();
-  alert('✅ הבוט הופעל לכל השיחות!');
 }
 async function disableAll(){
-  if(!confirm('לכבות בוט לכל השיחות?'))return;
   await fetch('/api/disable-all',{method:'POST'});
   await load();
 }
@@ -1111,13 +1114,10 @@ async function syncChats(){
   else alert('שגיאה: '+d.error);
 }
 async function enableAll(){
-  if(!confirm('להפעיל בוט לכל השיחות הקיימות?'))return;
   await fetch('/api/enable-all',{method:'POST'});
   await load();
-  alert('✅ הבוט הופעל לכל השיחות!');
 }
 async function disableAll(){
-  if(!confirm('לכבות בוט לכל השיחות?'))return;
   await fetch('/api/disable-all',{method:'POST'});
   await load();
 }
