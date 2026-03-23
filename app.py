@@ -18,6 +18,11 @@ ADMIN_PHONE         = "972502580803"  # רועי — מנהל
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = None  # דינמי לפי שעה
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI  = "https://whatsapp-bot-4vhq.onrender.com/google-callback"
+GOOGLE_SCOPES        = "https://www.googleapis.com/auth/contacts.readonly"
+google_tokens        = {}
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
@@ -83,7 +88,13 @@ ADMIN_SYSTEM_PROMPT = """אתה מקס — העוזר האישי של רועי, 
 
 כשרועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
   {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-אחרת — החזר: {"action":"continue","message":"תשובה לרועי"}"""
+אחרת — החזר: {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
+כשרועי מבקש לשלוח הודעה:
+  {"action":"send_message","phone":"...","message":"..."}
+כשרועי מבקש לחפש איש קשר:
+  {"action":"search_contact","query":"שם"}
+אחרת:
+  {"action":"continue","message":"תשובה לרועי"}"""
 
 
 def get_greeting():
@@ -289,6 +300,22 @@ def handle_message(phone, body, msg_type="text"):
                 f"לקריאה נוספת — כתוב לי בכל עת 😊"
             )
         return reply
+
+    if action == "send_message" and is_admin:
+        target = result.get("phone", "")
+        msg_to_send = result.get("message", "")
+        if target and msg_to_send:
+            if target.startswith("0"):
+                target = "972" + target[1:]
+            sent = send_message(target, msg_to_send)
+            return f"✅ נשלח ל-{target}" if sent else f"❌ שגיאה בשליחה"
+        return "❌ חסרים פרטים"
+
+    if action == "search_contact" and is_admin:
+        query = result.get("query", "")
+        if query:
+            return f"🔍 תוצאות:\n\n{search_google_contacts(query)}"
+        return "❌ לא צוין שם"
 
     if action == "cancelled":
         reset_session(phone)
@@ -1026,6 +1053,86 @@ def dashboard():
 @app.route("/mobile")
 def mobile():
     return render_template_string(MOBILE)
+
+# ─── Google OAuth ─────────────────────────────────────────────
+@app.route("/google-auth")
+def google_auth():
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth?"
+        f"client_id={GOOGLE_CLIENT_ID}&"
+        f"redirect_uri={requests.utils.quote(GOOGLE_REDIRECT_URI)}&"
+        f"response_type=code&"
+        f"scope={requests.utils.quote(GOOGLE_SCOPES)}&"
+        f"access_type=offline&"
+        f"prompt=consent"
+    )
+    return f'<meta http-equiv="refresh" content="0;url={auth_url}">'
+
+
+@app.route("/google-callback")
+def google_callback():
+    code = request.args.get("code")
+    if not code:
+        return "שגיאה: לא התקבל קוד", 400
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code"
+        })
+        tokens = r.json()
+        google_tokens["access_token"] = tokens.get("access_token")
+        google_tokens["refresh_token"] = tokens.get("refresh_token")
+        print(f"[Google] tokens received: {list(tokens.keys())}", flush=True)
+        return "<h2>✅ חשבון גוגל חובר בהצלחה!</h2><p>עכשיו מקס יכול לחפש אנשי קשר.</p>"
+    except Exception as e:
+        return f"שגיאה: {e}", 500
+
+
+def search_google_contacts(query):
+    token = google_tokens.get("access_token")
+    if not token:
+        return "❌ גוגל לא מחובר. חבר ב: https://whatsapp-bot-4vhq.onrender.com/google-auth"
+    try:
+        r = requests.get(
+            "https://people.googleapis.com/v1/people:searchContacts",
+            params={"query": query, "readMask": "names,phoneNumbers,emailAddresses", "pageSize": 5},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10
+        )
+        if r.status_code == 401:
+            # נסה לרענן
+            r2 = requests.post("https://oauth2.googleapis.com/token", data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": google_tokens.get("refresh_token"),
+                "grant_type": "refresh_token"
+            })
+            d2 = r2.json()
+            if "access_token" in d2:
+                google_tokens["access_token"] = d2["access_token"]
+                return search_google_contacts(query)
+            return "❌ טוקן פג — חבר מחדש: https://whatsapp-bot-4vhq.onrender.com/google-auth"
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            return f"לא נמצא '{query}'"
+        lines = []
+        for p in results:
+            person = p.get("person", {})
+            names = person.get("names", [{}])
+            name = names[0].get("displayName", "ללא שם") if names else "ללא שם"
+            phones = person.get("phoneNumbers", [])
+            line = f"👤 {name}"
+            for ph in phones:
+                line += f"\n📞 {ph.get('value','')}"
+            lines.append(line)
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"שגיאה: {e}"
+
 
 def polling_loop():
     """משאל את Green API כל 3 שניות להודעות חדשות"""
