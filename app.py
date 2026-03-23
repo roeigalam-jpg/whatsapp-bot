@@ -14,7 +14,7 @@ GREEN_API_INSTANCE  = "7107555828"
 GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
-ADMIN_PHONE         = "972529532110"  # רועי — מנהל
+ADMIN_PHONE         = "972502580803"  # רועי — מנהל
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = None  # דינמי לפי שעה
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
@@ -65,21 +65,25 @@ def load_data():
 
 load_data()
 
-ADMIN_SYSTEM_PROMPT = """אתה מקס — עוזר אישי של רועי, מנהל חברת בריכות שחייה אקוופולקו.
-אתה עוזר לרועי לנהל את העסק שלו דרך וואטסאפ.
+ADMIN_SYSTEM_PROMPT = """אתה מקס — העוזר האישי של רועי, בעל חברת בריכות שחייה אקוופולקו.
+רועי הוא הבוס שלך. אתה עוזר לו בכל דבר — עסקי, אישי, ניהול עובדים, לקוחות, ובריכות.
 
-מה שאתה יכול לעשות:
-1. לפתוח קריאת שירות — כשרועי אומר "פתח קריאה ל..." תאסוף פרטים ותפתח
-2. לדווח על קריאות פתוחות — "כמה קריאות פתוחות?" / "מה הסטטוס?"
-3. לשלוח הודעה ללקוח — "שלח ל-05X... הודעה: ..."
-4. כל שאלה עסקית אחרת
+אישיות:
+- נאמן, חכם, יעיל וישיר
+- עונה בעברית טבעית וקצרה — רועי עסוק
+- עוזר בכל מה שרועי מבקש, גם אם זה לא קשור לבריכות
+- מכיר את העסק — בריכות שחייה, התקנה, תחזוקה, שיפוץ
 
-סגנון:
-- קצר, ישיר, יעיל — רועי עסוק
-- עברית טבעית
-- אם רועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
+יכולות עסקיות:
+- פתיחת קריאת שירות ללקוח
+- מידע על קריאות פתוחות
+- עזרה בניסוח הודעות ללקוחות/עובדים
+- ייעוץ בניהול העסק
+- כל שאלה אחרת
+
+כשרועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
   {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-- אחרת — החזר: {"action":"continue","message":"תשובה לרועי"}"""
+אחרת — החזר: {"action":"continue","message":"תשובה לרועי"}"""
 
 
 def get_greeting():
@@ -336,13 +340,14 @@ def webhook():
             msg_type, body_text = parse_body()
             if not body_text:
                 return "ok"
-            # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
+            # תמיד רשום בפורטל
             if phone not in bot_enabled:
-                bot_enabled[phone] = False
+                is_admin = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
+                bot_enabled[phone] = is_admin  # מנהל — פעיל אוטומטית
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
             save_data()
-            # ענה רק אם הבוט מופעל ידנית
+            # ענה אם הבוט פעיל
             if bot_enabled.get(phone, False) and global_bot_on:
                 reply = handle_message(phone, body_text, msg_type)
                 add_to_history(phone, "bot", reply)
@@ -354,14 +359,29 @@ def webhook():
             phone = get_phone()
             if not phone or is_group(phone + "@c.us"):
                 return "ok"
-            _, body_text = parse_body()
+            msg_type, body_text = parse_body()
             if not body_text:
                 return "ok"
-            if phone not in bot_enabled:
-                bot_enabled[phone] = False
-            add_to_history(phone, "bot", body_text, "text")
-            sessions.setdefault(phone, {"step": "active", "data": {}})
-            save_data()
+
+            # אם זו הודעה שרועי שלח לעצמו (לצ'אט עם הבוט)
+            # chatId של שיחה עם עצמך = המספר שלך
+            sender_id = sender.get("chatId", "").replace("@c.us","")
+            is_admin_msg = (sender_id == ADMIN_PHONE or sender_id == ADMIN_PHONE.replace("972","0",1))
+
+            if is_admin_msg and bot_enabled.get(phone, False) and global_bot_on:
+                # זו הודעה מרועי לעצמו — הבוט יענה כעוזר
+                add_to_history(phone, "client", body_text, msg_type)
+                sessions.setdefault(phone, {"step": "active", "data": {}})
+                reply = handle_message(phone, body_text, msg_type)
+                add_to_history(phone, "bot", reply)
+                send_message(phone, reply)
+                save_data()
+            else:
+                if phone not in bot_enabled:
+                    bot_enabled[phone] = False
+                add_to_history(phone, "bot", body_text, "text")
+                sessions.setdefault(phone, {"step": "active", "data": {}})
+                save_data()
 
     except Exception as e:
         print(f"[Webhook] error: {e}")
