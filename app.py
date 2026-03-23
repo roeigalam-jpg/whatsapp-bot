@@ -14,15 +14,9 @@ GREEN_API_INSTANCE  = "7107555828"
 GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
-ADMIN_PHONE         = "972502580803"  # רועי — מנהל
 BUSINESS_NAME       = "שירות לקוחות"
-GREETING_MSG        = None  # דינמי לפי שעה
+GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
-GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI  = "https://whatsapp-bot-4vhq.onrender.com/google-callback"
-GOOGLE_SCOPES        = "https://www.googleapis.com/auth/contacts.readonly"
-google_tokens        = {}
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
@@ -70,67 +64,24 @@ def load_data():
 
 load_data()
 
-ADMIN_SYSTEM_PROMPT = """אתה מקס — העוזר האישי של רועי, בעל חברת בריכות שחייה אקוופולקו.
-רועי הוא הבוס שלך. אתה עוזר לו בכל דבר — עסקי, אישי, ניהול עובדים, לקוחות, ובריכות.
+SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
 
-אישיות:
-- נאמן, חכם, יעיל וישיר
-- עונה בעברית טבעית וקצרה — רועי עסוק
-- עוזר בכל מה שרועי מבקש, גם אם זה לא קשור לבריכות
-- מכיר את העסק — בריכות שחייה, התקנה, תחזוקה, שיפוץ
+הסגנון שלך:
+- עברית יומיומית, חמה וטבעית — כמו בן אדם אמיתי
+- קצר וענייני, לא רובוטי ולא פורמלי מדי
+- הגב בהתאם להקשר — אם הלקוח כותב "שלום" תגיב בחמימות, אם הוא מתאר תקלה תתמקד בה מיד
+- אל תשאל את כל השאלות בבת אחת — שאל שאלה אחת בכל פעם בצורה טבעית
 
-יכולות עסקיות:
-- פתיחת קריאת שירות ללקוח
-- מידע על קריאות פתוחות
-- עזרה בניסוח הודעות ללקוחות/עובדים
-- ייעוץ בניהול העסק
-- כל שאלה אחרת
-
-כשרועי מבקש לפתוח קריאה — אסוף פרטים ואז החזר JSON:
-  {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-אחרת — החזר: {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-כשרועי מבקש לשלוח הודעה:
-  {"action":"send_message","phone":"...","message":"..."}
-כשרועי מבקש לחפש איש קשר:
-  {"action":"search_contact","query":"שם"}
-אחרת:
-  {"action":"continue","message":"תשובה לרועי"}"""
-
-
-def get_greeting():
-    hour = datetime.now().hour
-    if 5 <= hour < 12:
-        return "בוקר טוב! 🌅"
-    elif 12 <= hour < 17:
-        return "צהריים טובים! ☀️"
-    elif 17 <= hour < 21:
-        return "ערב טוב! 🌆"
-    else:
-        return "שלום! 🌙"
-
-SYSTEM_PROMPT = """אתה מקס — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
-אתה מנהל שיחות וואטסאפ עם לקוחות בעברית טבעית וידידותית.
-
-זהות:
-- שמך מקס
-- אם שואלים מי אתה — "אני מקס, העוזר הדיגיטלי של רועי מאקוופולקו 😊"
-- פתח שיחה עם ברכה מתאימה לשעה (בוקר טוב / צהריים טובים / ערב טוב)
-
-סגנון:
-- עברית יומיומית, חמה וטבעית
-- ענייני ומהיר — אל תמשוך שיחה
-- נסה לאסוף את כל הפרטים ב-1-2 שאלות מרוכזות, לא פינג פונג ארוך
-- אם הלקוח מתאר תקלה — מיד שאל: "מה שמך, כתובת הבריכה וטלפון ליצירת קשר?"
-
-הפרטים שצריך לאסוף:
+הפרטים שצריך לאסוף (בהדרגה, בתוך השיחה):
 1. שם
 2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
+3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או משהו אחר
 4. תיאור הבעיה או הבקשה
 5. טלפון ליצירת קשר
 
 כללים:
-- אם שלח תמונה או הקלטה — הגב טבעית והמשך לאסוף פרטים
+- אם הלקוח מתאר בעיה בבריכה — הגב עם הבנה ואז שאל את מה שחסר
+- אם שלח תמונה — הגב על זה טבעית והמשך לאסוף פרטים
 - אם לא רוצה שירות — סגור בנימוס
 - אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
 - אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
@@ -191,7 +142,7 @@ def build_notify_message(phone, data):
     ])
 
 
-def ask_claude(history, user_msg, msg_type="text", is_admin=False):
+def ask_claude(history, user_msg, msg_type="text"):
     try:
         messages = []
         for h in history[-14:]:
@@ -217,7 +168,6 @@ def ask_claude(history, user_msg, msg_type="text", is_admin=False):
         else:
             messages.append({"role": "user", "content": current_msg})
 
-        system = ADMIN_SYSTEM_PROMPT if is_admin else SYSTEM_PROMPT
         resp = requests.post(
             CLAUDE_API_URL,
             headers={
@@ -228,7 +178,7 @@ def ask_claude(history, user_msg, msg_type="text", is_admin=False):
             json={
                 "model": CLAUDE_MODEL,
                 "max_tokens": 600,
-                "system": system,
+                "system": SYSTEM_PROMPT,
                 "messages": messages
             },
             timeout=20
@@ -269,9 +219,8 @@ def schedule_reminder(phone, last_msg):
 def handle_message(phone, body, msg_type="text"):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
-    is_admin = phone in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
 
-    result = ask_claude(history, body, msg_type, is_admin=is_admin)
+    result = ask_claude(history, body, msg_type)
     action = result.get("action", "continue")
 
     if action == "open_call":
@@ -286,36 +235,16 @@ def handle_message(phone, body, msg_type="text"):
             "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "status": "ממתינה לטיפול"
         })
-        if not is_admin:
-            send_message(NOTIFY_PHONE, build_notify_message(phone, result))
+        send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         reset_session(phone)
         save_data()
-        if is_admin:
-            reply = f"✅ קריאה נפתחה בהצלחה עבור {result.get('name','-')}!"
-        else:
-            reply = (
-                f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
-                f"נציג יצור איתך קשר בהקדם.\n"
-                f"תודה שפנית ל{BUSINESS_NAME}! 🙏\n\n"
-                f"לקריאה נוספת — כתוב לי בכל עת 😊"
-            )
+        reply = (
+            f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
+            f"נציג יצור איתך קשר בהקדם.\n"
+            f"תודה שפנית ל{BUSINESS_NAME}! 🙏\n\n"
+            f"לקריאה נוספת — כתוב לי בכל עת 😊"
+        )
         return reply
-
-    if action == "send_message" and is_admin:
-        target = result.get("phone", "")
-        msg_to_send = result.get("message", "")
-        if target and msg_to_send:
-            if target.startswith("0"):
-                target = "972" + target[1:]
-            sent = send_message(target, msg_to_send)
-            return f"✅ נשלח ל-{target}" if sent else f"❌ שגיאה בשליחה"
-        return "❌ חסרים פרטים"
-
-    if action == "search_contact" and is_admin:
-        query = result.get("query", "")
-        if query:
-            return f"🔍 תוצאות:\n\n{search_google_contacts(query)}"
-        return "❌ לא צוין שם"
 
     if action == "cancelled":
         reset_session(phone)
@@ -367,14 +296,13 @@ def webhook():
             msg_type, body_text = parse_body()
             if not body_text:
                 return "ok"
-            # תמיד רשום בפורטל
+            # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
             if phone not in bot_enabled:
-                is_admin = phone in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
-                bot_enabled[phone] = is_admin  # מנהל — פעיל אוטומטית
+                bot_enabled[phone] = False
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
             save_data()
-            # ענה אם הבוט פעיל
+            # ענה רק אם הבוט מופעל ידנית
             if bot_enabled.get(phone, False) and global_bot_on:
                 reply = handle_message(phone, body_text, msg_type)
                 add_to_history(phone, "bot", reply)
@@ -386,29 +314,14 @@ def webhook():
             phone = get_phone()
             if not phone or is_group(phone + "@c.us"):
                 return "ok"
-            msg_type, body_text = parse_body()
+            _, body_text = parse_body()
             if not body_text:
                 return "ok"
-
-            # אם זו הודעה שרועי שלח לעצמו (לצ'אט עם הבוט)
-            # chatId של שיחה עם עצמך = המספר שלך
-            sender_id = sender.get("chatId", "").replace("@c.us","")
-            is_admin_msg = sender_id in (ADMIN_PHONE, ADMIN_PHONE2, ADMIN_PHONE.replace("972","0",1), ADMIN_PHONE2.replace("972","0",1))
-
-            if is_admin_msg and bot_enabled.get(phone, False) and global_bot_on:
-                # זו הודעה מרועי לעצמו — הבוט יענה כעוזר
-                add_to_history(phone, "client", body_text, msg_type)
-                sessions.setdefault(phone, {"step": "active", "data": {}})
-                reply = handle_message(phone, body_text, msg_type)
-                add_to_history(phone, "bot", reply)
-                send_message(phone, reply)
-                save_data()
-            else:
-                if phone not in bot_enabled:
-                    bot_enabled[phone] = False
-                add_to_history(phone, "bot", body_text, "text")
-                sessions.setdefault(phone, {"step": "active", "data": {}})
-                save_data()
+            if phone not in bot_enabled:
+                bot_enabled[phone] = False
+            add_to_history(phone, "bot", body_text, "text")
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+            save_data()
 
     except Exception as e:
         print(f"[Webhook] error: {e}")
@@ -473,16 +386,13 @@ def api_toggle(phone):
     bot_enabled[phone] = not was_active
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
-        msg = f"{get_greeting()} איך אפשר לעזור?"
-        sent = send_message(phone, msg)
-        greeting_sent[phone] = True
-        add_to_history(phone, "bot", msg)
-        sessions.setdefault(phone, {"step": "active", "data": {}})
-        save_data()
-        print(f"[Toggle] greeting sent to {phone}, result={sent}", flush=True)
+        sent = send_message(phone, GREETING_MSG)
+        if sent:
+            greeting_sent[phone] = True
+            add_to_history(phone, "bot", GREETING_MSG)
+            sessions.setdefault(phone, {"step": "active", "data": {}})
     if not now_active:
         cancel_reminder(phone)
-    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
@@ -1054,86 +964,6 @@ def dashboard():
 def mobile():
     return render_template_string(MOBILE)
 
-# ─── Google OAuth ─────────────────────────────────────────────
-@app.route("/google-auth")
-def google_auth():
-    auth_url = (
-        f"https://accounts.google.com/o/oauth2/v2/auth?"
-        f"client_id={GOOGLE_CLIENT_ID}&"
-        f"redirect_uri={requests.utils.quote(GOOGLE_REDIRECT_URI)}&"
-        f"response_type=code&"
-        f"scope={requests.utils.quote(GOOGLE_SCOPES)}&"
-        f"access_type=offline&"
-        f"prompt=consent"
-    )
-    return f'<meta http-equiv="refresh" content="0;url={auth_url}">'
-
-
-@app.route("/google-callback")
-def google_callback():
-    code = request.args.get("code")
-    if not code:
-        return "שגיאה: לא התקבל קוד", 400
-    try:
-        r = requests.post("https://oauth2.googleapis.com/token", data={
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": GOOGLE_REDIRECT_URI,
-            "grant_type": "authorization_code"
-        })
-        tokens = r.json()
-        google_tokens["access_token"] = tokens.get("access_token")
-        google_tokens["refresh_token"] = tokens.get("refresh_token")
-        print(f"[Google] tokens received: {list(tokens.keys())}", flush=True)
-        return "<h2>✅ חשבון גוגל חובר בהצלחה!</h2><p>עכשיו מקס יכול לחפש אנשי קשר.</p>"
-    except Exception as e:
-        return f"שגיאה: {e}", 500
-
-
-def search_google_contacts(query):
-    token = google_tokens.get("access_token")
-    if not token:
-        return "❌ גוגל לא מחובר. חבר ב: https://whatsapp-bot-4vhq.onrender.com/google-auth"
-    try:
-        r = requests.get(
-            "https://people.googleapis.com/v1/people:searchContacts",
-            params={"query": query, "readMask": "names,phoneNumbers,emailAddresses", "pageSize": 5},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        if r.status_code == 401:
-            # נסה לרענן
-            r2 = requests.post("https://oauth2.googleapis.com/token", data={
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "refresh_token": google_tokens.get("refresh_token"),
-                "grant_type": "refresh_token"
-            })
-            d2 = r2.json()
-            if "access_token" in d2:
-                google_tokens["access_token"] = d2["access_token"]
-                return search_google_contacts(query)
-            return "❌ טוקן פג — חבר מחדש: https://whatsapp-bot-4vhq.onrender.com/google-auth"
-        data = r.json()
-        results = data.get("results", [])
-        if not results:
-            return f"לא נמצא '{query}'"
-        lines = []
-        for p in results:
-            person = p.get("person", {})
-            names = person.get("names", [{}])
-            name = names[0].get("displayName", "ללא שם") if names else "ללא שם"
-            phones = person.get("phoneNumbers", [])
-            line = f"👤 {name}"
-            for ph in phones:
-                line += f"\n📞 {ph.get('value','')}"
-            lines.append(line)
-        return "\n\n".join(lines)
-    except Exception as e:
-        return f"שגיאה: {e}"
-
-
 def polling_loop():
     """משאל את Green API כל 3 שניות להודעות חדשות"""
     url_receive = f"{GREEN_API_URL}/receiveNotification/{GREEN_API_TOKEN}"
@@ -1209,28 +1039,9 @@ def polling_loop():
         time.sleep(3)
 
 
-def keep_alive():
-    """שמור את השרת ער כדי שלא יכבה"""
-    while True:
-        try:
-            requests.get("https://whatsapp-bot-4vhq.onrender.com/ping", timeout=5)
-        except:
-            pass
-        time.sleep(240)  # כל 4 דקות
-
-
-@app.route("/ping")
-def ping():
-    return "ok"
-
-
-# הפעל polling ו-keep-alive
+# הפעל polling אוטומטית (עובד גם עם Gunicorn)
 _polling_thread = threading.Thread(target=polling_loop, daemon=True)
 _polling_thread.start()
-print("[Polling] thread started", flush=True)
-
-_keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
-_keepalive_thread.start()
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, port=5000)
