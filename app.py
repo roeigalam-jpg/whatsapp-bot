@@ -1084,24 +1084,13 @@ def polling_loop():
                     elif webhook_type == "outgoingMessageReceived":
                         phone = get_phone()
                         if phone and not is_group(phone + "@c.us"):
-                            msg_type, body_text = parse_body()
+                            _, body_text = parse_body()
                             if body_text:
-                                is_admin_msg = (phone == ADMIN_PHONE or phone == ADMIN_PHONE.replace("972","0",1))
-                                if is_admin_msg and bot_enabled.get(phone, True) and global_bot_on:
-                                    add_to_history(phone, "client", body_text, msg_type)
-                                    sessions.setdefault(phone, {"step": "active", "data": {}})
-                                    if phone not in bot_enabled:
-                                        bot_enabled[phone] = True
-                                    reply = handle_message(phone, body_text, msg_type)
-                                    add_to_history(phone, "bot", reply)
-                                    send_message(phone, reply)
-                                    save_data()
-                                else:
-                                    if phone not in bot_enabled:
-                                        bot_enabled[phone] = False
-                                    add_to_history(phone, "bot", body_text, "text")
-                                    sessions.setdefault(phone, {"step": "active", "data": {}})
-                                    save_data()
+                                if phone not in bot_enabled:
+                                    bot_enabled[phone] = False
+                                add_to_history(phone, "bot", body_text, "text")
+                                sessions.setdefault(phone, {"step": "active", "data": {}})
+                                save_data()
 
                     # מחק את ההודעה מהתור
                     if receipt_id:
@@ -1113,13 +1102,9 @@ def polling_loop():
         time.sleep(3)
 
 
-# הפעל polling אוטומטית
-def start_polling():
-    t = threading.Thread(target=polling_loop, daemon=True)
-    t.start()
-    print("[Polling] thread started", flush=True)
-
-start_polling()
+# הפעל polling אוטומטית (עובד גם עם Gunicorn)
+_polling_thread = threading.Thread(target=polling_loop, daemon=True)
+_polling_thread.start()
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, port=5000)
