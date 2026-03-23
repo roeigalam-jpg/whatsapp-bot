@@ -1113,30 +1113,13 @@ def polling_loop():
         time.sleep(3)
 
 
-# הפעל polling אוטומטית (עובד גם עם Gunicorn)
-import atexit
-_polling_started = False
-_polling_lock = threading.Lock()
+# הפעל polling אוטומטית
+def start_polling():
+    t = threading.Thread(target=polling_loop, daemon=True)
+    t.start()
+    print("[Polling] thread started", flush=True)
 
-def start_polling_once():
-    global _polling_started
-    with _polling_lock:
-        if not _polling_started:
-            _polling_started = True
-            t = threading.Thread(target=polling_loop, daemon=True)
-            t.start()
-            print("[Polling] thread started", flush=True)
-
-# Start polling when first request comes in
-@app.before_request
-def ensure_polling():
-    start_polling_once()
-
-# Also try to start immediately
-try:
-    start_polling_once()
-except:
-    pass
+start_polling()
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
