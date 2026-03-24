@@ -16,6 +16,7 @@ GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTA
 NOTIFY_PHONE        = "972527066110"
 BUSINESS_NAME       = "שירות לקוחות"
 GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
+USE_POLLING         = os.environ.get("USE_POLLING", "false").strip().lower() in ("1", "true", "yes", "on")
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_URL      = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
@@ -1119,17 +1120,12 @@ def polling_loop():
                             msg_type, body_text = parse_body()
                             if body_text:
                                 if phone not in bot_enabled:
-                                    is_boss_p = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
-                                    bot_enabled[phone] = is_boss_p
+                                    bot_enabled[phone] = False
                                 add_to_history(phone, "client", body_text, msg_type)
                                 sessions.setdefault(phone, {"step": "active", "data": {}})
                                 save_data()
                                 if bot_enabled.get(phone, False) and global_bot_on:
-                                    # חלץ URL להקלטה
-                                    audio_url = None
-                                    if msg_type == "audio":
-                                        audio_url = msg_data.get("fileData", {}).get("downloadUrl") or msg_data.get("downloadUrl")
-                                    reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
+                                    reply = handle_message(phone, body_text, msg_type)
                                     add_to_history(phone, "bot", reply)
                                     send_message(phone, reply)
                                     save_data()
@@ -1155,9 +1151,13 @@ def polling_loop():
         time.sleep(3)
 
 
-# הפעל polling אוטומטית (עובד גם עם Gunicorn)
-_polling_thread = threading.Thread(target=polling_loop, daemon=True)
-_polling_thread.start()
+# polling ו-webhook עלולים להיכנס כפול לאותה הודעה. מפעילים polling רק אם ביקשת במפורש.
+if USE_POLLING:
+    _polling_thread = threading.Thread(target=polling_loop, daemon=True)
+    _polling_thread.start()
+    print("[Startup] polling enabled", flush=True)
+else:
+    print("[Startup] polling disabled (webhook mode)", flush=True)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
