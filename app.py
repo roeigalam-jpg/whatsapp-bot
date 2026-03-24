@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import os
+import base64
 
 app = Flask(__name__)
 
@@ -15,7 +16,7 @@ GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
 BUSINESS_NAME       = "שירות לקוחות"
-GREETING_MSG        = "היי! איך אפשר לעזור? "
+GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
 USE_POLLING         = os.environ.get("USE_POLLING", "true").strip().lower() in ("1", "true", "yes", "on")
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
@@ -49,13 +50,14 @@ def save_data():
                 "bot_enabled": bot_enabled,
                 "chat_history": chat_history,
                 "greeting_sent": greeting_sent,
-                "global_bot_on": global_bot_on
+                "global_bot_on": global_bot_on,
+                "google_tokens": google_tokens
             }, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save] error: {e}", flush=True)
 
 def load_data():
-    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, google_tokens
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -66,6 +68,7 @@ def load_data():
                 chat_history  = d.get("chat_history", {})
                 greeting_sent = d.get("greeting_sent", {})
                 global_bot_on = d.get("global_bot_on", True)
+                google_tokens = d.get("google_tokens", {})
             print("[Load] data loaded successfully", flush=True)
     except Exception as e:
         print(f"[Load] error: {e}", flush=True)
@@ -108,6 +111,68 @@ def send_message(phone, text):
     except Exception as e:
         print(f"[GreenAPI] error: {e}")
         return False
+
+
+def extract_audio_url(msg_data):
+    return (
+        msg_data.get("fileMessageData", {}).get("downloadUrl")
+        or msg_data.get("fileData", {}).get("downloadUrl")
+        or msg_data.get("downloadUrl", "")
+    )
+
+
+def transcribe_audio_with_gemini(audio_url):
+    if not GEMINI_API_KEY or not audio_url:
+        return None
+    try:
+        audio_resp = requests.get(audio_url, timeout=20)
+        if audio_resp.status_code != 200 or not audio_resp.content:
+            print(f"[Gemini] audio download failed: {audio_resp.status_code}", flush=True)
+            return None
+
+        mime_type = (audio_resp.headers.get("Content-Type") or "audio/ogg").split(";")[0]
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": "תמלל את ההודעה הקולית לעברית בלבד. החזר רק את המלל המתומלל."},
+                        {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(audio_resp.content).decode("utf-8")}}
+                    ]
+                }
+            ],
+            "generationConfig": {"temperature": 0}
+        }
+        gemini_resp = requests.post(
+            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=30
+        )
+        if gemini_resp.status_code != 200:
+            print(f"[Gemini] API error: {gemini_resp.status_code} {gemini_resp.text[:200]}", flush=True)
+            return None
+        data = gemini_resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None
+        parts = candidates[0].get("content", {}).get("parts", [])
+        for part in parts:
+            text = part.get("text", "").strip()
+            if text:
+                return text
+        return None
+    except Exception as e:
+        print(f"[Gemini] transcription error: {e}", flush=True)
+        return None
+
+
+def enrich_incoming_message(msg_type, body_text, msg_data):
+    if msg_type != "audio":
+        return body_text
+    transcript = transcribe_audio_with_gemini(extract_audio_url(msg_data))
+    if transcript:
+        return f"[הודעה קולית]\n{transcript}"
+    return body_text
 
 
 def add_to_history(phone, sender, message, msg_type="text"):
@@ -304,6 +369,7 @@ def webhook():
             msg_type, body_text = parse_body()
             if not body_text:
                 return "ok"
+            body_text = enrich_incoming_message(msg_type, body_text, msg_data)
             # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
             if phone not in bot_enabled:
                 bot_enabled[phone] = False
@@ -1068,6 +1134,22 @@ def api_google_status():
     })
 
 
+def init_google_contacts():
+    """טעינת אנשי קשר מגוגל ברקע כדי לא לחסום startup."""
+    try:
+        if google_tokens.get("access_token"):
+            fetch_google_contacts()
+        elif google_tokens.get("refresh_token"):
+            refresh_google_token()
+    except Exception as e:
+        print(f"[Google] init error: {e}", flush=True)
+
+
+def start_background_initializers():
+    t = threading.Thread(target=init_google_contacts, daemon=True)
+    t.start()
+
+
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD)
@@ -1119,6 +1201,7 @@ def polling_loop():
                         if phone and not is_group(phone + "@c.us"):
                             msg_type, body_text = parse_body()
                             if body_text:
+                                body_text = enrich_incoming_message(msg_type, body_text, msg_data)
                                 if phone not in bot_enabled:
                                     bot_enabled[phone] = False
                                 add_to_history(phone, "client", body_text, msg_type)
@@ -1158,6 +1241,8 @@ if USE_POLLING:
     print("[Startup] polling enabled", flush=True)
 else:
     print("[Startup] polling disabled (webhook mode)", flush=True)
+
+start_background_initializers()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
