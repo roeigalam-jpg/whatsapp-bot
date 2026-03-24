@@ -6,14 +6,12 @@ import json
 import threading
 import time
 import os
-import base64
-from functools import wraps
 
 app = Flask(__name__)
 
 # ─── הגדרות ───────────────────────────────────────────────────
 GREEN_API_INSTANCE   = os.environ.get("GREEN_API_INSTANCE", "7107555828").strip()
-GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "").strip()
+GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97").strip()
 GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://7107.api.greenapi.com").rstrip("/")
 GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "972527066110").strip()
@@ -26,14 +24,10 @@ GEMINI_API_URL       = "https://generativelanguage.googleapis.com/v1beta/models/
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI", "https://whatsapp-bot-4vhq.onrender.com/google-callback")
-CLAUDE_API_URL       = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL         = "claude-sonnet-4-20250514"
-ADMIN_TOKEN          = os.environ.get("ADMIN_TOKEN", "").strip()
 google_tokens        = {}
 google_contacts      = []  # רשימת אנשי קשר מגוגל
-
-if not GREEN_API_TOKEN:
-    print("[Startup] WARNING: GREEN_API_TOKEN is not set", flush=True)
+CLAUDE_API_URL       = "https://api.anthropic.com/v1/messages"
+CLAUDE_MODEL         = "claude-sonnet-4-20250514"
 
 # ─── נתונים ───────────────────────────────────────────────────
 sessions      = {}
@@ -56,14 +50,13 @@ def save_data():
                 "bot_enabled": bot_enabled,
                 "chat_history": chat_history,
                 "greeting_sent": greeting_sent,
-                "global_bot_on": global_bot_on,
-                "google_tokens": google_tokens
+                "global_bot_on": global_bot_on
             }, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save] error: {e}", flush=True)
 
 def load_data():
-    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, google_tokens
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -74,27 +67,9 @@ def load_data():
                 chat_history  = d.get("chat_history", {})
                 greeting_sent = d.get("greeting_sent", {})
                 global_bot_on = d.get("global_bot_on", True)
-                google_tokens = d.get("google_tokens", {})
             print("[Load] data loaded successfully", flush=True)
     except Exception as e:
         print(f"[Load] error: {e}", flush=True)
-
-
-def require_admin(f):
-    """Optional API protection using ADMIN_TOKEN env var."""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if not ADMIN_TOKEN:
-            return f(*args, **kwargs)
-        token = (
-            request.headers.get("X-Admin-Token", "").strip()
-            or request.args.get("token", "").strip()
-        )
-        if token != ADMIN_TOKEN:
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
-        return f(*args, **kwargs)
-    return wrapper
-
 
 load_data()
 
@@ -134,68 +109,6 @@ def send_message(phone, text):
     except Exception as e:
         print(f"[GreenAPI] error: {e}")
         return False
-
-
-def extract_audio_url(msg_data):
-    return (
-        msg_data.get("fileMessageData", {}).get("downloadUrl")
-        or msg_data.get("fileData", {}).get("downloadUrl")
-        or msg_data.get("downloadUrl", "")
-    )
-
-
-def transcribe_audio_with_gemini(audio_url):
-    if not GEMINI_API_KEY or not audio_url:
-        return None
-    try:
-        audio_resp = requests.get(audio_url, timeout=20)
-        if audio_resp.status_code != 200 or not audio_resp.content:
-            print(f"[Gemini] audio download failed: {audio_resp.status_code}", flush=True)
-            return None
-
-        mime_type = (audio_resp.headers.get("Content-Type") or "audio/ogg").split(";")[0]
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": "תמלל את ההודעה הקולית לעברית בלבד. החזר רק את המלל המתומלל."},
-                        {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(audio_resp.content).decode("utf-8")}}
-                    ]
-                }
-            ],
-            "generationConfig": {"temperature": 0}
-        }
-        gemini_resp = requests.post(
-            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=30
-        )
-        if gemini_resp.status_code != 200:
-            print(f"[Gemini] API error: {gemini_resp.status_code} {gemini_resp.text[:200]}", flush=True)
-            return None
-        data = gemini_resp.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return None
-        parts = candidates[0].get("content", {}).get("parts", [])
-        for part in parts:
-            text = part.get("text", "").strip()
-            if text:
-                return text
-        return None
-    except Exception as e:
-        print(f"[Gemini] transcription error: {e}", flush=True)
-        return None
-
-
-def enrich_incoming_message(msg_type, body_text, msg_data):
-    if msg_type != "audio":
-        return body_text
-    transcript = transcribe_audio_with_gemini(extract_audio_url(msg_data))
-    if transcript:
-        return f"[הודעה קולית]\n{transcript}"
-    return body_text
 
 
 def add_to_history(phone, sender, message, msg_type="text"):
@@ -365,10 +278,6 @@ def webhook():
         sender   = data.get("senderData", {})
         print(f"[Webhook] type={webhook_type} sender={sender} data={data}", flush=True)
 
-        # אם polling פעיל, נמנע עיבוד כפול של אותן הודעות דרך webhook.
-        if USE_POLLING and webhook_type in ("incomingMessageReceived", "outgoingMessageReceived"):
-            return "ok"
-
         def get_phone():
             return sender.get("chatId", "").replace("@c.us", "")
 
@@ -396,10 +305,9 @@ def webhook():
             msg_type, body_text = parse_body()
             if not body_text:
                 return "ok"
-            body_text = enrich_incoming_message(msg_type, body_text, msg_data)
             # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
             if phone not in bot_enabled:
-                bot_enabled[phone] = False
+                bot_enabled[phone] = True
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
             save_data()
@@ -431,7 +339,6 @@ def webhook():
 
 # ─── API ──────────────────────────────────────────────────────
 @app.route("/api/chats")
-@require_admin
 def api_chats():
     search = request.args.get("q", "").strip().lower()
     all_phones = set(list(chat_history.keys()) + list(bot_enabled.keys()))
@@ -470,7 +377,6 @@ def api_chats():
 
 
 @app.route("/api/global-toggle", methods=["POST"])
-@require_admin
 def api_global_toggle():
     global global_bot_on
     global_bot_on = not global_bot_on
@@ -479,13 +385,11 @@ def api_global_toggle():
 
 
 @app.route("/api/global-status")
-@require_admin
 def api_global_status():
     return jsonify({"global_bot_on": global_bot_on})
 
 
 @app.route("/api/toggle/<path:phone>", methods=["POST"])
-@require_admin
 def api_toggle(phone):
     was_active = bot_enabled.get(phone, False)
     bot_enabled[phone] = not was_active
@@ -502,7 +406,6 @@ def api_toggle(phone):
 
 
 @app.route("/api/add-contact", methods=["POST"])
-@require_admin
 def api_add_contact():
     """הוסף לקוח חדש לפאנל"""
     data = request.get_json(force=True)
@@ -522,7 +425,6 @@ def api_add_contact():
 
 
 @app.route("/api/resend-last/<path:phone>", methods=["POST"])
-@require_admin
 def api_resend_last(phone):
     """שלח שוב את ההודעה האחרונה של הבוט"""
     history = chat_history.get(phone, [])
@@ -540,13 +442,11 @@ def api_resend_last(phone):
 
 
 @app.route("/api/service-calls")
-@require_admin
 def api_service_calls():
     return jsonify(service_calls)
 
 
 @app.route("/api/service-calls/<int:call_id>/status", methods=["POST"])
-@require_admin
 def api_update_status(call_id):
     data = request.get_json(force=True)
     for call in service_calls:
@@ -578,8 +478,6 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global{border:none;border-radius:8px;padding:6px 14px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
-.btn-sync{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;background:var(--s3);color:var(--text);border:1px solid var(--border)}
-.btn-sync:disabled{opacity:.6;cursor:not-allowed}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -658,7 +556,6 @@ input:checked+.tsl:before{transform:translateX(-15px)}
   <div class="logo"><div class="logo-icon">🔧</div>מרכז שירות</div>
   <div class="hdr-mid">
     <input class="search-box" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
-    <button class="btn-sync" id="sync-btn" onclick="manualSync()">🔄 סנכרון</button>
     <button class="btn-global on" id="global-btn" onclick="toggleGlobal()">🟢 פעיל</button>
   </div>
   <div class="stats">
@@ -698,20 +595,13 @@ input:checked+.tsl:before{transform:translateX(-15px)}
 <script>
 let chats=[], calls=[], sel=null, globalOn=true;
 const TYPE_ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
-const ADMIN_TOKEN=(()=>{const t=new URLSearchParams(location.search).get('token')||localStorage.getItem('admin_token')||'';if(t)localStorage.setItem('admin_token',t);return t;})();
-function withToken(url){if(!ADMIN_TOKEN)return url;return url+(url.includes('?')?'&':'?')+'token='+encodeURIComponent(ADMIN_TOKEN);}
-function apiFetch(url,options={}){
-  const headers=Object.assign({},options.headers||{});
-  if(ADMIN_TOKEN)headers['X-Admin-Token']=ADMIN_TOKEN;
-  return fetch(withToken(url),Object.assign({},options,{headers}));
-}
 
 async function load(){
   const q=document.getElementById('search').value;
   const [cr,sr,gr]=await Promise.all([
-    apiFetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
-    apiFetch('/api/service-calls'),
-    apiFetch('/api/global-status')
+    fetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
+    fetch('/api/service-calls'),
+    fetch('/api/global-status')
   ]);
   chats=await cr.json(); calls=await sr.json(); const gs=await gr.json();
   globalOn=gs.global_bot_on;
@@ -722,14 +612,6 @@ async function load(){
   document.getElementById('s2').textContent=calls.length;
   renderList(); renderCalls();
   if(sel){const c=chats.find(c=>c.phone===sel);if(c)renderWin(c);}
-}
-async function manualSync(){
-  const btn=document.getElementById('sync-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ מסנכרן...';}
-  try{await load();}
-  finally{
-    if(btn){btn.disabled=false;btn.textContent='🔄 סנכרון';}
-  }
 }
 
 function renderList(){
@@ -798,16 +680,16 @@ function renderWin(c){
 }
 
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
-async function tog(phone){await apiFetch('/api/toggle/'+phone,{method:'POST'});await load();}
-async function toggleGlobal(){await apiFetch('/api/global-toggle',{method:'POST'});await load();}
+async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
+async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
 async function resendLast(phone){
-  const r=await apiFetch('/api/resend-last/'+phone,{method:'POST'});
+  const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
   if(!d.ok)alert('אין הודעה לשליחה חוזרת');
   else await load();
 }
 async function updateStatus(id,status){
-  await apiFetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
 }
 function openAddContact(){document.getElementById('modal').classList.add('open');document.getElementById('contact-phone').focus();}
@@ -815,7 +697,7 @@ function closeModal(){document.getElementById('modal').classList.remove('open');
 async function addContact(){
   const phone=document.getElementById('contact-phone').value.trim();
   if(!phone){alert('הזן מספר');return;}
-  const r=await apiFetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const r=await fetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const d=await r.json();
   if(d.ok){closeModal();await load();pick(d.phone);}
   else alert(d.error||'שגיאה');
@@ -842,12 +724,9 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);heigh
 .hdr{background:var(--s1);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0}
 .hdr-icon{width:30px;height:30px;background:linear-gradient(135deg,#25d366,#128c7e);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
 .hdr-title{font-weight:800;font-size:15px;flex:1}
-.hdr-actions{display:flex;gap:6px;align-items:center}
 .btn-global{border:none;border-radius:18px;padding:5px 12px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
-.btn-sync{border:none;border-radius:18px;padding:5px 10px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;background:var(--s3);color:var(--text);border:1px solid var(--border)}
-.btn-sync:disabled{opacity:.6;cursor:not-allowed}
 .search-bar{padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .search-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:14px;outline:none}
 .search-input:focus{border-color:var(--accent)}
@@ -920,10 +799,7 @@ input:checked+.tsl:before{transform:translateX(-17px)}
 <div class="hdr">
   <div class="hdr-icon">🔧</div>
   <div class="hdr-title">בוט שירות</div>
-  <div class="hdr-actions">
-    <button class="btn-sync" id="m-sync-btn" onclick="manualSync()">🔄 סנכרון</button>
-    <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 פעיל</button>
-  </div>
+  <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 פעיל</button>
 </div>
 <div class="search-bar">
   <input class="search-input" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
@@ -968,20 +844,13 @@ input:checked+.tsl:before{transform:translateX(-17px)}
 <script>
 let chats=[], calls=[], cvPhone=null, globalOn=true;
 const TYPE_ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
-const ADMIN_TOKEN=(()=>{const t=new URLSearchParams(location.search).get('token')||localStorage.getItem('admin_token')||'';if(t)localStorage.setItem('admin_token',t);return t;})();
-function withToken(url){if(!ADMIN_TOKEN)return url;return url+(url.includes('?')?'&':'?')+'token='+encodeURIComponent(ADMIN_TOKEN);}
-function apiFetch(url,options={}){
-  const headers=Object.assign({},options.headers||{});
-  if(ADMIN_TOKEN)headers['X-Admin-Token']=ADMIN_TOKEN;
-  return fetch(withToken(url),Object.assign({},options,{headers}));
-}
 
 async function load(){
   const q=document.getElementById('search').value;
   const [cr,sr,gr]=await Promise.all([
-    apiFetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
-    apiFetch('/api/service-calls'),
-    apiFetch('/api/global-status')
+    fetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
+    fetch('/api/service-calls'),
+    fetch('/api/global-status')
   ]);
   chats=await cr.json(); calls=await sr.json(); const gs=await gr.json();
   globalOn=gs.global_bot_on;
@@ -990,14 +859,6 @@ async function load(){
   else{btn.className='btn-global off';btn.textContent='🔴 כבוי';}
   renderCards(); renderCalls();
   if(cvPhone){const c=chats.find(c=>c.phone===cvPhone);if(c)updateCV(c);}
-}
-async function manualSync(){
-  const btn=document.getElementById('m-sync-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳';}
-  try{await load();}
-  finally{
-    if(btn){btn.disabled=false;btn.textContent='🔄 סנכרון';}
-  }
 }
 
 function showTab(t){
@@ -1072,18 +933,18 @@ function updateCV(c){
 }
 
 function closeChat(){document.getElementById('chat-view').classList.remove('active');cvPhone=null;}
-async function cvToggle(){if(cvPhone){await apiFetch('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
+async function cvToggle(){if(cvPhone){await fetch('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
 async function resendLast(){if(cvPhone)await resendLastFor(cvPhone);}
 async function resendLastFor(phone){
-  const r=await apiFetch('/api/resend-last/'+phone,{method:'POST'});
+  const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
   if(!d.ok)alert('אין הודעה לשליחה חוזרת');
   else{await load();if(cvPhone===phone){const c=chats.find(c=>c.phone===phone);if(c)updateCV(c);}}
 }
-async function tog(phone){await apiFetch('/api/toggle/'+phone,{method:'POST'});await load();}
-async function toggleGlobal(){await apiFetch('/api/global-toggle',{method:'POST'});await load();}
+async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
+async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
 async function updateStatus(id,status){
-  await apiFetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
 }
 function openModal(){document.getElementById('modal').classList.add('open');setTimeout(()=>document.getElementById('m-phone').focus(),100);}
@@ -1091,7 +952,7 @@ function closeModal(){document.getElementById('modal').classList.remove('open');
 async function addContact(){
   const phone=document.getElementById('m-phone').value.trim();
   if(!phone){alert('הזן מספר');return;}
-  const r=await apiFetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const r=await fetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const d=await r.json();
   if(d.ok){closeModal();await load();openChat(d.phone);}
   else alert(d.error||'שגיאה');
@@ -1201,28 +1062,11 @@ def google_callback():
 
 
 @app.route("/api/google-status")
-@require_admin
 def api_google_status():
     return jsonify({
         "connected": bool(google_tokens.get("access_token")),
         "contacts": len(google_contacts)
     })
-
-
-def init_google_contacts():
-    """טעינת אנשי קשר מגוגל ברקע כדי לא לחסום startup."""
-    try:
-        if google_tokens.get("access_token"):
-            fetch_google_contacts()
-        elif google_tokens.get("refresh_token"):
-            refresh_google_token()
-    except Exception as e:
-        print(f"[Google] init error: {e}", flush=True)
-
-
-def start_background_initializers():
-    t = threading.Thread(target=init_google_contacts, daemon=True)
-    t.start()
 
 
 @app.route("/")
@@ -1276,9 +1120,8 @@ def polling_loop():
                         if phone and not is_group(phone + "@c.us"):
                             msg_type, body_text = parse_body()
                             if body_text:
-                                body_text = enrich_incoming_message(msg_type, body_text, msg_data)
                                 if phone not in bot_enabled:
-                                    bot_enabled[phone] = False
+                                    bot_enabled[phone] = True
                                 add_to_history(phone, "client", body_text, msg_type)
                                 sessions.setdefault(phone, {"step": "active", "data": {}})
                                 save_data()
@@ -1309,15 +1152,10 @@ def polling_loop():
         time.sleep(3)
 
 
-# polling ו-webhook עלולים להיכנס כפול לאותה הודעה. מפעילים polling רק אם ביקשת במפורש.
+# הפעל polling רק אם נדרש (למנוע כפילויות עם webhook)
 if USE_POLLING:
     _polling_thread = threading.Thread(target=polling_loop, daemon=True)
     _polling_thread.start()
-    print("[Startup] polling enabled", flush=True)
-else:
-    print("[Startup] polling disabled (webhook mode)", flush=True)
-
-start_background_initializers()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
