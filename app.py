@@ -14,10 +14,16 @@ GREEN_API_INSTANCE  = "7107555828"
 GREEN_API_TOKEN     = "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97"
 GREEN_API_URL       = f"https://7107.api.greenapi.com/waInstance{GREEN_API_INSTANCE}"
 NOTIFY_PHONE        = "972527066110"
-BOSS_PHONE          = "972502580803"  # רועי — הבוס
 BUSINESS_NAME       = "שירות לקוחות"
-GREETING_MSG        = None  # דינמי לפי שעה
+GREETING_MSG        = "היי! איך אפשר לעזור? 😊"
 ANTHROPIC_KEY       = os.environ.get("ANTHROPIC_KEY", "")
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_URL      = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI  = "https://whatsapp-bot-4vhq.onrender.com/google-callback"
+google_tokens        = {}
+google_contacts      = []  # רשימת אנשי קשר מגוגל
 CLAUDE_API_URL      = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
 
@@ -65,45 +71,24 @@ def load_data():
 
 load_data()
 
-def get_greeting():
-    from datetime import timezone as tz
-    import datetime as dt
-    israel_time = datetime.now(tz.utc) + __import__('datetime').timedelta(hours=3)
-    hour = israel_time.hour
-    if 5 <= hour < 12:
-        return "בוקר טוב! 🌅"
-    elif 12 <= hour < 17:
-        return "צהריים טובים! ☀️"
-    elif 17 <= hour < 22:
-        return "ערב טוב! 🌆"
-    else:
-        return "לילה טוב! 🌙"
+SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
 
-SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
+הסגנון שלך:
+- עברית יומיומית, חמה וטבעית — כמו בן אדם אמיתי
+- קצר וענייני, לא רובוטי ולא פורמלי מדי
+- הגב בהתאם להקשר — אם הלקוח כותב "שלום" תגיב בחמימות, אם הוא מתאר תקלה תתמקד בה מיד
+- אל תשאל את כל השאלות בבת אחת — שאל שאלה אחת בכל פעם בצורה טבעית
 
-זהות:
-- שמך גל
-- אם שואלים מי אתה: "אני גל, העוזר הדיגיטלי של רועי מאקוופולקו 😊"
-- פתח תמיד עם ברכה לפי שעה (בוקר טוב / צהריים טובים / ערב טוב)
-
-סגנון:
-- עברית יומיומית, חמה, נעימה וטבעית
-- הודעות קצרות וטבעיות — לא יותר מ-2-3 שורות בכל פעם
-- חמים ואכפתי אבל לא מוגזם
-- אל תשלח ברכת בוקר/ערב — ההודעה הראשונה כבר כוללת ברכה
-- נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
-- אם הלקוח מתאר תקלה — שאל: "אוי, לא נעים 😕 מה שמך, כתובת הבריכה וטלפון?"
-- אם שלח הקלטה קולית או וידאו — הגב: "תודה! 😊 שלח לי גם בטקסט: שמך, כתובת הבריכה וטלפון"
-
-הפרטים שצריך לאסוף:
+הפרטים שצריך לאסוף (בהדרגה, בתוך השיחה):
 1. שם
 2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
+3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או משהו אחר
 4. תיאור הבעיה או הבקשה
 5. טלפון ליצירת קשר
 
 כללים:
-- אם שלח תמונה, הקלטה קולית, וידאו — הגב בנימוס והמשך לאסוף פרטים
+- אם הלקוח מתאר בעיה בבריכה — הגב עם הבנה ואז שאל את מה שחסר
+- אם שלח תמונה — הגב על זה טבעית והמשך לאסוף פרטים
 - אם לא רוצה שירות — סגור בנימוס
 - אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
 - אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
@@ -111,22 +96,6 @@ SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חבר
 - אם ביטל — החזר: {"action":"cancelled"}
 - אחרת — החזר: {"action":"continue","message":"הודעה ללקוח"}
 - אל תציין מספר קריאה בשיחה"""
-
-
-BOSS_SYSTEM_PROMPT = """אתה גל — עוזר אישי חכם של רועי, בעל חברת בריכות שחייה אקוופולקו.
-רועי הוא הבוס שלך. עזור לו בכל דבר — עסקי, אישי, טכני, יצירתי, או כל תחום אחר.
-
-אישיות:
-- חכם, ישיר, יעיל
-- עברית טבעית וקצרה — רועי עסוק
-- עונה על הכל ללא הגבלה — רועי הבוס
-
-כשרועי מבקש לפתוח קריאת שירות:
-  {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-כשרועי מבקש לשלוח הודעה:
-  {"action":"send_message","phone":"...","message":"..."}
-אחרת:
-  {"action":"continue","message":"תשובה לרועי"}"""
 
 
 def send_message(phone, text):
@@ -180,7 +149,7 @@ def build_notify_message(phone, data):
     ])
 
 
-def ask_claude(history, user_msg, msg_type="text", is_boss=False):
+def ask_claude(history, user_msg, msg_type="text"):
     try:
         messages = []
         for h in history[-14:]:
@@ -206,7 +175,6 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False):
         else:
             messages.append({"role": "user", "content": current_msg})
 
-        system = BOSS_SYSTEM_PROMPT if is_boss else SYSTEM_PROMPT
         resp = requests.post(
             CLAUDE_API_URL,
             headers={
@@ -216,8 +184,8 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False):
             },
             json={
                 "model": CLAUDE_MODEL,
-                "max_tokens": 1000,
-                "system": system,
+                "max_tokens": 600,
+                "system": SYSTEM_PROMPT,
                 "messages": messages
             },
             timeout=20
@@ -255,55 +223,11 @@ def schedule_reminder(phone, last_msg):
     reminder_timers[phone] = t
 
 
-def transcribe_audio(audio_url):
-    """מתמלל הקלטה קולית באמצעות Claude"""
-    try:
-        # הורד את הקובץ
-        r = requests.get(audio_url, timeout=15)
-        if r.status_code != 200:
-            return None
-        import base64
-        audio_b64 = base64.b64encode(r.content).decode()
-        resp = requests.post(
-            CLAUDE_API_URL,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01"
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 500,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "תמלל את ההקלטה הזו לעברית. החזר רק את הטקסט המתומלל ללא הסברים."},
-                        {"type": "document", "source": {"type": "base64", "media_type": "audio/ogg", "data": audio_b64}}
-                    ]
-                }]
-            },
-            timeout=30
-        )
-        return resp.json()["content"][0]["text"].strip()
-    except Exception as e:
-        print(f"[Transcribe] error: {e}", flush=True)
-        return None
-
-
-def handle_message(phone, body, msg_type="text", audio_url=None):
+def handle_message(phone, body, msg_type="text"):
     cancel_reminder(phone)  # ביטול תזכורת קודמת
     history = chat_history.get(phone, [])
-    is_boss = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
-    print(f"[Handle] phone={phone} is_boss={is_boss}", flush=True)
 
-    # תמלול הקלטה אם יש URL
-    if msg_type == "audio" and audio_url and is_boss:
-        transcribed = transcribe_audio(audio_url)
-        if transcribed:
-            body = f"[הקלטה קולית — תמלול: {transcribed}]"
-            add_to_history(phone, "client", f"🎤 {transcribed}", "audio")
-
-    result = ask_claude(history, body, msg_type, is_boss=is_boss)
+    result = ask_claude(history, body, msg_type)
     action = result.get("action", "continue")
 
     if action == "open_call":
@@ -328,16 +252,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             f"לקריאה נוספת — כתוב לי בכל עת 😊"
         )
         return reply
-
-    if action == "send_message" and is_boss:
-        target = result.get("phone", "")
-        msg_to_send = result.get("message", "")
-        if target and msg_to_send:
-            if target.startswith("0"):
-                target = "972" + target[1:]
-            sent = send_message(target, msg_to_send)
-            return f"✅ נשלח ל-{target}" if sent else "❌ שגיאה בשליחה"
-        return "❌ חסרים פרטים"
 
     if action == "cancelled":
         reset_session(phone)
@@ -373,7 +287,6 @@ def webhook():
                 "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
                 "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
                 "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
-                "callMessage":     ("text",     lambda d: "[התקשר/ה בשיחת וואטסאפ]"),
                 "documentMessage": ("document", lambda d: "[שלח מסמך]"),
                 "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
                 "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
@@ -391,13 +304,12 @@ def webhook():
             if not body_text:
                 return "ok"
             # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
-            is_boss_phone = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
             if phone not in bot_enabled:
-                bot_enabled[phone] = is_boss_phone  # בוס — פעיל אוטומטית
+                bot_enabled[phone] = False
             add_to_history(phone, "client", body_text, msg_type)
             sessions.setdefault(phone, {"step": "active", "data": {}})
             save_data()
-            # ענה אם הבוט פעיל
+            # ענה רק אם הבוט מופעל ידנית
             if bot_enabled.get(phone, False) and global_bot_on:
                 reply = handle_message(phone, body_text, msg_type)
                 add_to_history(phone, "bot", reply)
@@ -451,16 +363,14 @@ def api_chats():
             "step":          sessions.get(phone, {}).get("step", "active")
         })
 
-    # מיין: לפי זמן הודעה אחרונה — הכי חדש ראשון
+    # מיין: בוט פעיל קודם, אחר כך לפי זמן
     def sort_key(c):
-        history = c.get("history", [])
-        if history:
-            # קח את הזמן האחרון בהיסטוריה
-            last_time = history[-1].get("time", "00:00")
-            return last_time
-        return "00:00"
+        active = 0 if c["bot_active"] else 1
+        t = c["last_message"]["time"] if c["last_message"] else "00:00"
+        return (active, t)
 
-    result.sort(key=sort_key, reverse=True)
+    result.sort(key=sort_key, reverse=False)
+    result = list(reversed(result))
     return jsonify(result)
 
 
@@ -470,58 +380,6 @@ def api_global_toggle():
     global_bot_on = not global_bot_on
     save_data()
     return jsonify({"global_bot_on": global_bot_on})
-
-
-@app.route("/api/sync-chats", methods=["POST"])
-def api_sync_chats():
-    """סנכרן שיחות מ-Green API"""
-    try:
-        url = f"{GREEN_API_URL}/getChats/{GREEN_API_TOKEN}"
-        print(f"[Sync] fetching chats from {url}", flush=True)
-        r = requests.get(url, timeout=15)
-        print(f"[Sync] status={r.status_code} response={r.text[:200]}", flush=True)
-        if r.status_code != 200:
-            return jsonify({"ok": False, "error": f"Green API error: {r.status_code} - {r.text[:100]}"})
-        chats_data = r.json()
-        print(f"[Sync] got {len(chats_data)} chats", flush=True)
-        count = 0
-        for chat in chats_data:
-            chat_id = chat.get("id", "")
-            if "@c.us" not in chat_id or "@g.us" in chat_id:
-                continue
-            phone = chat_id.replace("@c.us", "")
-            if phone not in chat_history:
-                chat_history[phone] = []
-            if phone not in bot_enabled:
-                bot_enabled[phone] = False
-            sessions.setdefault(phone, {"step": "active", "data": {}})
-            count += 1
-        save_data()
-        return jsonify({"ok": True, "synced": count})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/enable-all", methods=["POST"])
-def api_enable_all():
-    """הפעל בוט לכל השיחות הקיימות"""
-    count = 0
-    for phone in list(chat_history.keys()):
-        if not bot_enabled.get(phone, False):
-            bot_enabled[phone] = True
-            count += 1
-    save_data()
-    return jsonify({"ok": True, "enabled": count})
-
-
-@app.route("/api/disable-all", methods=["POST"])
-def api_disable_all():
-    """כבה בוט לכל השיחות"""
-    for phone in list(bot_enabled.keys()):
-        bot_enabled[phone] = False
-        cancel_reminder(phone)
-    save_data()
-    return jsonify({"ok": True})
 
 
 @app.route("/api/global-status")
@@ -535,15 +393,13 @@ def api_toggle(phone):
     bot_enabled[phone] = not was_active
     now_active = bot_enabled[phone]
     if now_active and not greeting_sent.get(phone, False):
-        msg = f"{get_greeting()} מה נשמע? 😊"
-        sent = send_message(phone, msg)
-        greeting_sent[phone] = True
-        add_to_history(phone, "bot", msg)
-        sessions.setdefault(phone, {"step": "active", "data": {}})
-        save_data()
+        sent = send_message(phone, GREETING_MSG)
+        if sent:
+            greeting_sent[phone] = True
+            add_to_history(phone, "bot", GREETING_MSG)
+            sessions.setdefault(phone, {"step": "active", "data": {}})
     if not now_active:
         cancel_reminder(phone)
-    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
@@ -620,8 +476,6 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global{border:none;border-radius:8px;padding:6px 14px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
-.btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
-.btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -700,10 +554,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
   <div class="logo"><div class="logo-icon">🔧</div>מרכז שירות</div>
   <div class="hdr-mid">
     <input class="search-box" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
-    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()" title="הפעל/כבה מענה חדש">🟢 מענה פעיל</button>
-    <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן שיחות</button>
-    <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ הפעל לכולם</button>
-    <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
+    <button class="btn-global on" id="global-btn" onclick="toggleGlobal()">🟢 פעיל</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -829,20 +680,6 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
-async function syncChats(){
-  const r=await fetch('/api/sync-chats',{method:'POST'});
-  const d=await r.json();
-  if(d.ok){await load();alert('✅ סונכרנו '+d.synced+' שיחות!');}
-  else alert('שגיאה: '+d.error);
-}
-async function enableAll(){
-  await fetch('/api/enable-all',{method:'POST'});
-  await load();
-}
-async function disableAll(){
-  await fetch('/api/disable-all',{method:'POST'});
-  await load();
-}
 async function resendLast(phone){
   const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
@@ -888,8 +725,6 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);heigh
 .btn-global{border:none;border-radius:18px;padding:5px 12px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
-.btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
-.btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
 .search-bar{padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .search-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:14px;outline:none}
 .search-input:focus{border-color:var(--accent)}
@@ -963,7 +798,6 @@ input:checked+.tsl:before{transform:translateX(-17px)}
   <div class="hdr-icon">🔧</div>
   <div class="hdr-title">בוט שירות</div>
   <button class="btn-global on" id="g-btn" onclick="toggleGlobal()">🟢 פעיל</button>
-  <button style="border:none;border-radius:16px;padding:5px 10px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent)" onclick="enableAll()">⚡ לכולם</button>
 </div>
 <div class="search-bar">
   <input class="search-input" id="search" placeholder="🔍 חפש מספר או טקסט..." oninput="load()">
@@ -1107,20 +941,6 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
-async function syncChats(){
-  const r=await fetch('/api/sync-chats',{method:'POST'});
-  const d=await r.json();
-  if(d.ok){await load();alert('✅ סונכרנו '+d.synced+' שיחות!');}
-  else alert('שגיאה: '+d.error);
-}
-async function enableAll(){
-  await fetch('/api/enable-all',{method:'POST'});
-  await load();
-}
-async function disableAll(){
-  await fetch('/api/disable-all',{method:'POST'});
-  await load();
-}
 async function updateStatus(id,status){
   await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
@@ -1143,6 +963,52 @@ load();setInterval(load,4000);
 </html>"""
 
 
+@app.route("/google-auth")
+def google_auth():
+    if not GOOGLE_CLIENT_ID:
+        return "GOOGLE_CLIENT_ID לא מוגדר ב-Render Environment", 400
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/contacts.readonly",
+        "access_type": "offline",
+        "prompt": "consent"
+    })
+    return f'<meta http-equiv="refresh" content="0;url=https://accounts.google.com/o/oauth2/v2/auth?{params}">'
+
+
+@app.route("/google-callback")
+def google_callback():
+    code = request.args.get("code")
+    if not code:
+        return "שגיאה: לא התקבל קוד", 400
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code"
+        })
+        tokens = r.json()
+        google_tokens["access_token"] = tokens.get("access_token")
+        google_tokens["refresh_token"] = tokens.get("refresh_token")
+        fetch_google_contacts()
+        return f"<h2>✅ גוגל חובר! נטענו {len(google_contacts)} אנשי קשר.</h2>"
+    except Exception as e:
+        return f"שגיאה: {e}", 500
+
+
+@app.route("/api/google-status")
+def api_google_status():
+    return jsonify({
+        "connected": bool(google_tokens.get("access_token")),
+        "contacts": len(google_contacts)
+    })
+
+
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD)
@@ -1159,7 +1025,6 @@ def polling_loop():
     while True:
         try:
             r = requests.get(url_receive, timeout=10)
-            print(f"[Polling] status={r.status_code} text={r.text[:100]}", flush=True)
             if r.status_code == 200 and r.text and r.text != "null":
                 data = r.json()
                 if data:
@@ -1196,12 +1061,17 @@ def polling_loop():
                             msg_type, body_text = parse_body()
                             if body_text:
                                 if phone not in bot_enabled:
-                                    bot_enabled[phone] = False
+                                    is_boss_p = phone in (BOSS_PHONE, BOSS_PHONE.replace("972","0",1))
+                                    bot_enabled[phone] = is_boss_p
                                 add_to_history(phone, "client", body_text, msg_type)
                                 sessions.setdefault(phone, {"step": "active", "data": {}})
                                 save_data()
                                 if bot_enabled.get(phone, False) and global_bot_on:
-                                    reply = handle_message(phone, body_text, msg_type)
+                                    # חלץ URL להקלטה
+                                    audio_url = None
+                                    if msg_type == "audio":
+                                        audio_url = msg_data.get("fileData", {}).get("downloadUrl") or msg_data.get("downloadUrl")
+                                    reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
                                     add_to_history(phone, "bot", reply)
                                     send_message(phone, reply)
                                     save_data()
@@ -1227,25 +1097,9 @@ def polling_loop():
         time.sleep(3)
 
 
-def keep_alive():
-    """מונע מהשרת להיכבות"""
-    while True:
-        try:
-            requests.get("https://whatsapp-bot-4vhq.onrender.com/ping", timeout=5)
-        except:
-            pass
-        time.sleep(240)
-
-@app.route("/ping")
-def ping():
-    return "ok"
-
-# הפעל polling ו-keep-alive
+# הפעל polling אוטומטית (עובד גם עם Gunicorn)
 _polling_thread = threading.Thread(target=polling_loop, daemon=True)
 _polling_thread.start()
 
-_keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
-_keepalive_thread.start()
-
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, port=5000)
