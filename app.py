@@ -39,6 +39,8 @@ GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "").strip()
 GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://api.green-api.com").rstrip("/")
 GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}" if GREEN_API_INSTANCE else ""
 NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "").strip()
+NOTIFY_GROUP_ID      = "972529532110-1614167768@g.us"
+notify_to_group      = False
 BOSS_PHONE           = os.environ.get("BOSS_PHONE", "").strip()
 BUSINESS_NAME        = "שירות לקוחות"
 GREETING_MSG         = "היי! איך אפשר לעזור? 😊"
@@ -552,7 +554,9 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 "status": "ממתינה לטיפול"
             })
             reset_session(phone)
-        if NOTIFY_PHONE:
+        if notify_to_group:
+            send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
+        elif NOTIFY_PHONE:
             send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         save_data()
         if is_boss:
@@ -760,6 +764,19 @@ def api_chats():
     return jsonify(snapshot)
 
 
+@app.route("/api/notify-toggle", methods=["POST"])
+def api_notify_toggle():
+    global notify_to_group
+    notify_to_group = not notify_to_group
+    save_data()
+    return jsonify({"notify_to_group": notify_to_group})
+
+
+@app.route("/api/notify-status")
+def api_notify_status():
+    return jsonify({"notify_to_group": notify_to_group})
+
+
 @app.route("/api/global-toggle", methods=["POST"])
 def api_global_toggle():
     global global_bot_on
@@ -935,6 +952,9 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
+.notify-toggle{border:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
+.notify-toggle.group{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
+.notify-toggle.personal{background:rgba(100,149,237,.15);color:#6495ed;border:1px solid #6495ed}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -1017,6 +1037,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
+    <button class="notify-toggle personal" id="notify-btn" onclick="toggleNotify()" title="החלף יעד קריאות">📨 קריאות → אישי</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1143,6 +1164,20 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
+async function loadNotifyStatus(){
+  try{
+    const r=await fetch('/api/notify-status',{credentials:'include'});
+    const d=await r.json();
+    const btn=document.getElementById('notify-btn');
+    if(!btn)return;
+    if(d.notify_to_group){btn.className='notify-toggle group';btn.textContent='📨 קריאות → קבוצה';}
+    else{btn.className='notify-toggle personal';btn.textContent='📨 קריאות → אישי';}
+  }catch(e){}
+}
+async function toggleNotify(){
+  await fetch('/api/notify-toggle',{method:'POST',credentials:'include'});
+  await loadNotifyStatus();
+}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
@@ -1179,7 +1214,7 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();setInterval(load,4000);
+load();loadNotifyStatus();setInterval(load,4000);setInterval(loadNotifyStatus,5000);
 </script>
 </body>
 </html>"""
@@ -1422,6 +1457,20 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
+async function loadNotifyStatus(){
+  try{
+    const r=await fetch('/api/notify-status',{credentials:'include'});
+    const d=await r.json();
+    const btn=document.getElementById('notify-btn');
+    if(!btn)return;
+    if(d.notify_to_group){btn.className='notify-toggle group';btn.textContent='📨 קריאות → קבוצה';}
+    else{btn.className='notify-toggle personal';btn.textContent='📨 קריאות → אישי';}
+  }catch(e){}
+}
+async function toggleNotify(){
+  await fetch('/api/notify-toggle',{method:'POST',credentials:'include'});
+  await loadNotifyStatus();
+}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
