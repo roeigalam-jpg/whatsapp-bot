@@ -1,7 +1,8 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import requests
-import re
 import json
 import threading
 import time
@@ -10,20 +11,44 @@ import os
 app = Flask(__name__)
 
 # ─── הגדרות ───────────────────────────────────────────────────
-GREEN_API_INSTANCE   = os.environ.get("GREEN_API_INSTANCE", "7107555828").strip()
-GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "3bd4a6dac146413bb8fa7deff8cfc91cc61f10a392034aec97").strip()
-GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://7107.api.greenapi.com").rstrip("/")
-GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}"
-NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "972527066110").strip()
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "").strip()
+if not FLASK_SECRET_KEY:
+    FLASK_SECRET_KEY = os.urandom(24)
+    print("[Auth] FLASK_SECRET_KEY לא הוגדר — נוצר מפתח אקראי (סשנים יאבדו אחרי ריסטארט). הגדר משתנה סביבה.", flush=True)
+app.secret_key = FLASK_SECRET_KEY
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+if os.environ.get("SESSION_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes", "on"):
+    app.config["SESSION_COOKIE_SECURE"] = True
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+AUTH_CONFIGURED = bool(ADMIN_PASSWORD or ADMIN_TOKEN)
+if not AUTH_CONFIGURED:
+    print("[Auth] לא הוגדרו ADMIN_PASSWORD / ADMIN_TOKEN — הפאנל וה-API פתוחים לכולם. מומלץ להגדיר מיד.", flush=True)
+
+GREEN_API_INSTANCE   = os.environ.get("GREEN_API_INSTANCE", "").strip()
+GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "").strip()
+GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://api.green-api.com").rstrip("/")
+GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}" if GREEN_API_INSTANCE else ""
+NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "").strip()
 BUSINESS_NAME        = "שירות לקוחות"
 GREETING_MSG         = "היי! איך אפשר לעזור? 😊"
-USE_POLLING          = os.environ.get("USE_POLLING", "true").strip().lower() in ("1", "true", "yes", "on")
+USE_POLLING          = os.environ.get("USE_POLLING", "false").strip().lower() in ("1", "true", "yes", "on")
+WEBHOOK_SECRET       = os.environ.get("WEBHOOK_SECRET", "").strip()
+FLASK_DEBUG          = os.environ.get("FLASK_DEBUG", "false").strip().lower() in ("1", "true", "yes", "on")
+FLASK_PORT           = int(os.environ.get("PORT", os.environ.get("FLASK_PORT", "5000")))
+
+state_lock = threading.RLock()
+_seen_event_keys = {}
+_seen_lock = threading.Lock()
+MAX_SEEN_KEYS = 8000
 ANTHROPIC_KEY        = os.environ.get("ANTHROPIC_KEY", "")
 GEMINI_API_KEY       = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_URL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI", "https://whatsapp-bot-4vhq.onrender.com/google-callback")
+GOOGLE_REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
 google_tokens        = {}
 google_contacts      = []  # רשימת אנשי קשר מגוגל
 CLAUDE_API_URL       = "https://api.anthropic.com/v1/messages"
@@ -42,18 +67,30 @@ reminder_timers   = {}   # phone -> timer thread
 DATA_FILE = "data.json"
 
 def save_data():
+    with state_lock:
+        payload = {
+            "sessions": sessions,
+            "service_calls": service_calls,
+            "bot_enabled": bot_enabled,
+            "chat_history": chat_history,
+            "greeting_sent": greeting_sent,
+            "global_bot_on": global_bot_on
+        }
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({
-                "sessions": sessions,
-                "service_calls": service_calls,
-                "bot_enabled": bot_enabled,
-                "chat_history": chat_history,
-                "greeting_sent": greeting_sent,
-                "global_bot_on": global_bot_on
-            }, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save] error: {e}", flush=True)
+
+def _migrate_history_ts():
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    for phone, msgs in chat_history.items():
+        for i, m in enumerate(msgs or []):
+            if not isinstance(m, dict):
+                continue
+            if m.get("ts"):
+                continue
+            m["ts"] = (base.replace(second=min(base.second + i, 59))).isoformat()
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
@@ -61,17 +98,74 @@ def load_data():
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
+            with state_lock:
                 sessions      = d.get("sessions", {})
                 service_calls = d.get("service_calls", [])
                 bot_enabled   = d.get("bot_enabled", {})
                 chat_history  = d.get("chat_history", {})
                 greeting_sent = d.get("greeting_sent", {})
                 global_bot_on = d.get("global_bot_on", True)
+            _migrate_history_ts()
             print("[Load] data loaded successfully", flush=True)
     except Exception as e:
         print(f"[Load] error: {e}", flush=True)
 
 load_data()
+
+def admin_authenticated():
+    if not AUTH_CONFIGURED:
+        return True
+    if ADMIN_TOKEN and request.headers.get("Authorization", "") == f"Bearer {ADMIN_TOKEN}":
+        return True
+    return session.get("admin") is True
+
+@app.before_request
+def _require_admin():
+    if request.endpoint in ("webhook", "google_callback", "login_page", "health_check"):
+        return
+    if request.endpoint is None:
+        return
+    if admin_authenticated():
+        return
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "לא מאומת / Unauthorized"}), 401
+    nxt = request.path
+    if request.query_string:
+        nxt += "?" + request.query_string.decode("utf-8", errors="ignore")
+    return redirect(url_for("login_page", next=nxt))
+
+def extract_message_id(payload):
+    if not isinstance(payload, dict):
+        return None
+    mid = payload.get("idMessage")
+    if mid:
+        return str(mid)
+    md = payload.get("messageData") or {}
+    for k in ("idMessage", "messageId"):
+        if md.get(k):
+            return str(md[k])
+    return None
+
+def is_duplicate_green_event(body, receipt_id):
+    mid = extract_message_id(body)
+    keys = []
+    if mid:
+        keys.append(f"m:{mid}")
+    if receipt_id is not None:
+        keys.append(f"r:{receipt_id}")
+    if not keys:
+        return False
+    now = time.monotonic()
+    with _seen_lock:
+        for k in keys:
+            if k in _seen_event_keys:
+                return True
+        for k in keys:
+            _seen_event_keys[k] = now
+        if len(_seen_event_keys) > MAX_SEEN_KEYS:
+            for k, _ in sorted(_seen_event_keys.items(), key=lambda x: x[1])[:3000]:
+                del _seen_event_keys[k]
+    return False
 
 SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחייה. אתה מנהל שיחת וואטסאפ טבעית עם לקוחות.
 
@@ -100,7 +194,27 @@ SYSTEM_PROMPT = """אתה נציג שירות של חברת בריכות שחי�
 - אל תציין מספר קריאה בשיחה"""
 
 
+def parse_green_msg(msg_data):
+    msg_type_raw = (msg_data or {}).get("typeMessage", "textMessage")
+    type_map = {
+        "textMessage":          ("text", lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
+        "extendedTextMessage": ("text", lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
+        "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
+        "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
+        "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
+        "documentMessage": ("document", lambda d: "[שלח מסמך]"),
+        "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
+        "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
+        "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
+    }
+    msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
+    return msg_type, extractor(msg_data) or ""
+
+
 def send_message(phone, text):
+    if not GREEN_API_URL or not GREEN_API_TOKEN:
+        print("[GreenAPI] GREEN_API_INSTANCE / GREEN_API_TOKEN לא הוגדרו — לא נשלחה הודעה", flush=True)
+        return False
     try:
         url = f"{GREEN_API_URL}/sendMessage/{GREEN_API_TOKEN}"
         chat_id = phone if "@c.us" in phone else f"{phone}@c.us"
@@ -112,21 +226,27 @@ def send_message(phone, text):
 
 
 def add_to_history(phone, sender, message, msg_type="text"):
-    chat_history.setdefault(phone, []).append({
+    ts = datetime.now(timezone.utc).isoformat()
+    entry = {
         "sender": sender, "message": message,
         "time": datetime.now().strftime("%H:%M"),
-        "type": msg_type
-    })
+        "type": msg_type,
+        "ts": ts
+    }
+    with state_lock:
+        chat_history.setdefault(phone, []).append(entry)
 
 
 def get_session(phone):
-    if phone not in sessions:
-        sessions[phone] = {"step": "active", "data": {}}
-    return sessions[phone]
+    with state_lock:
+        if phone not in sessions:
+            sessions[phone] = {"step": "active", "data": {}}
+        return sessions[phone]
 
 
 def reset_session(phone):
-    sessions[phone] = {"step": "active", "data": {}}
+    with state_lock:
+        sessions[phone] = {"step": "active", "data": {}}
 
 
 def is_group(phone):
@@ -152,6 +272,8 @@ def build_notify_message(phone, data):
 
 
 def ask_claude(history, user_msg, msg_type="text"):
+    if not (ANTHROPIC_KEY or "").strip():
+        return {"action": "continue", "message": "שירות הבוט לא מוגדר כרגע (חסר מפתח AI). צור קשר עם הנציג."}
     try:
         messages = []
         for h in history[-14:]:
@@ -192,13 +314,21 @@ def ask_claude(history, user_msg, msg_type="text"):
             },
             timeout=20
         )
-        text = resp.json()["content"][0]["text"].strip()
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"[Claude] bad JSON status={resp.status_code}", flush=True)
+            return {"action": "continue", "message": "מצטערים, שגיאת שרת זמנית. נסה שוב."}
+        if "content" not in data:
+            print(f"[Claude] error payload: {data}", flush=True)
+            return {"action": "continue", "message": "מצטערים, לא הצלחתי להשיב כרגע. נסה שוב."}
+        text = data["content"][0]["text"].strip()
         try:
             start = text.find("{")
             end   = text.rfind("}") + 1
             if start != -1 and end > start:
                 return json.loads(text[start:end])
-        except:
+        except json.JSONDecodeError:
             pass
         return {"action": "continue", "message": text}
     except Exception as e:
@@ -207,45 +337,56 @@ def ask_claude(history, user_msg, msg_type="text"):
 
 
 def cancel_reminder(phone):
-    if phone in reminder_timers:
-        reminder_timers[phone].cancel()
-        del reminder_timers[phone]
+    with state_lock:
+        t = reminder_timers.pop(phone, None)
+    if t:
+        t.cancel()
 
 
 def schedule_reminder(phone, last_msg):
     """שולח תזכורת אחרי 30 שניות אם הלקוח לא ענה"""
-    cancel_reminder(phone)
     def remind():
-        if bot_enabled.get(phone, False) and global_bot_on:
+        with state_lock:
+            on = bot_enabled.get(phone, False) and global_bot_on
+        if on:
             send_message(phone, last_msg)
             add_to_history(phone, "bot", f"[תזכורת] {last_msg}")
+            save_data()
     t = threading.Timer(30.0, remind)
     t.daemon = True
+    with state_lock:
+        old = reminder_timers.pop(phone, None)
+        if old:
+            old.cancel()
+        reminder_timers[phone] = t
     t.start()
-    reminder_timers[phone] = t
 
 
 def handle_message(phone, body, msg_type="text"):
-    cancel_reminder(phone)  # ביטול תזכורת קודמת
-    history = chat_history.get(phone, [])
+    with state_lock:
+        cancel_reminder(phone)
+        history = list(chat_history.get(phone, []))
 
     result = ask_claude(history, body, msg_type)
     action = result.get("action", "continue")
 
     if action == "open_call":
-        call_id = len(service_calls) + 1
-        service_calls.append({
-            "id": call_id, "phone": phone,
-            "name": result.get("name","-"),
-            "address": result.get("address","-"),
-            "call_type": result.get("call_type","-"),
-            "description": result.get("description","-"),
-            "contact_phone": result.get("contact_phone","-"),
-            "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "status": "ממתינה לטיפול"
-        })
-        send_message(NOTIFY_PHONE, build_notify_message(phone, result))
-        reset_session(phone)
+        with state_lock:
+            cancel_reminder(phone)
+            call_id = len(service_calls) + 1
+            service_calls.append({
+                "id": call_id, "phone": phone,
+                "name": result.get("name","-"),
+                "address": result.get("address","-"),
+                "call_type": result.get("call_type","-"),
+                "description": result.get("description","-"),
+                "contact_phone": result.get("contact_phone","-"),
+                "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "status": "ממתינה לטיפול"
+            })
+            reset_session(phone)
+        if NOTIFY_PHONE:
+            send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         save_data()
         reply = (
             f"✅ *הקריאה נפתחה בהצלחה!*\n\n"
@@ -256,152 +397,224 @@ def handle_message(phone, body, msg_type="text"):
         return reply
 
     if action == "cancelled":
-        reset_session(phone)
+        with state_lock:
+            cancel_reminder(phone)
+            reset_session(phone)
+        save_data()
         return "בסדר גמור! אם תצטרך עזרה בעתיד — אנחנו כאן. 🙏"
 
     reply = result.get("message", "לא הבנתי, נסה שוב.")
-    # קבע תזכורת
     schedule_reminder(phone, reply)
     return reply
+
+
+def process_green_event(body, receipt_id=None):
+    """מעבד גוף webhook אחד (גם מ-polling וגם מ-POST /webhook)."""
+    if is_duplicate_green_event(body, receipt_id):
+        return
+    webhook_type = body.get("typeWebhook", "")
+    msg_data = body.get("messageData", {})
+    sender = body.get("senderData", {})
+
+    def get_phone():
+        return sender.get("chatId", "").replace("@c.us", "")
+
+    if webhook_type == "incomingMessageReceived":
+        phone = get_phone()
+        if not phone or is_group(phone + "@c.us"):
+            return
+        msg_type, body_text = parse_green_msg(msg_data)
+        if not body_text:
+            return
+        with state_lock:
+            bot_enabled.setdefault(phone, False)
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+        add_to_history(phone, "client", body_text, msg_type)
+        save_data()
+        with state_lock:
+            allow_reply = bot_enabled.get(phone, False) and global_bot_on
+        if allow_reply:
+            reply = handle_message(phone, body_text, msg_type)
+            add_to_history(phone, "bot", reply)
+            send_message(phone, reply)
+            save_data()
+
+    elif webhook_type == "outgoingMessageReceived":
+        phone = get_phone()
+        if not phone or is_group(phone + "@c.us"):
+            return
+        _, body_text = parse_green_msg(msg_data)
+        if not body_text:
+            return
+        with state_lock:
+            bot_enabled.setdefault(phone, False)
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+        add_to_history(phone, "bot", body_text, "text")
+        save_data()
 
 
 # ─── Webhook ──────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
+        if WEBHOOK_SECRET:
+            token = request.headers.get("X-Webhook-Secret", "")
+            sec = WEBHOOK_SECRET.encode("utf-8")
+            tok = token.encode("utf-8")
+            if len(tok) != len(sec) or not hmac.compare_digest(tok, sec):
+                return "forbidden", 403
         data = request.get_json(force=True)
         if not data:
             return "ok"
-
-        webhook_type = data.get("typeWebhook", "")
-        msg_data = data.get("messageData", {})
-        sender   = data.get("senderData", {})
-        print(f"[Webhook] type={webhook_type} sender={sender} data={data}", flush=True)
-
-        def get_phone():
-            return sender.get("chatId", "").replace("@c.us", "")
-
-        def parse_body():
-            msg_type_raw = msg_data.get("typeMessage", "textMessage")
-            type_map = {
-                "textMessage":          ("text", lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
-                "extendedTextMessage": ("text", lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
-                "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
-                "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
-                "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
-                "documentMessage": ("document", lambda d: "[שלח מסמך]"),
-                "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
-                "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
-                "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
-            }
-            msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
-            return msg_type, extractor(msg_data) or ""
-
-        # הודעה נכנסת מלקוח
-        if webhook_type == "incomingMessageReceived":
-            phone = get_phone()
-            if not phone or is_group(phone + "@c.us"):
-                return "ok"
-            msg_type, body_text = parse_body()
-            if not body_text:
-                return "ok"
-            # תמיד רשום בפורטל, toggle כבוי כברירת מחדל
-            if phone not in bot_enabled:
-                bot_enabled[phone] = True
-            add_to_history(phone, "client", body_text, msg_type)
-            sessions.setdefault(phone, {"step": "active", "data": {}})
-            save_data()
-            # ענה רק אם הבוט מופעל ידנית
-            if bot_enabled.get(phone, False) and global_bot_on:
-                reply = handle_message(phone, body_text, msg_type)
-                add_to_history(phone, "bot", reply)
-                send_message(phone, reply)
-                save_data()
-
-        # הודעה יוצאת (שלחת מהוואטסאפ או מהפורטל)
-        elif webhook_type == "outgoingMessageReceived":
-            phone = get_phone()
-            if not phone or is_group(phone + "@c.us"):
-                return "ok"
-            _, body_text = parse_body()
-            if not body_text:
-                return "ok"
-            if phone not in bot_enabled:
-                bot_enabled[phone] = False
-            add_to_history(phone, "bot", body_text, "text")
-            sessions.setdefault(phone, {"step": "active", "data": {}})
-            save_data()
-
+        print(f"[Webhook] type={data.get('typeWebhook','')} sender={data.get('senderData',{})}", flush=True)
+        process_green_event(data, None)
     except Exception as e:
-        print(f"[Webhook] error: {e}")
+        print(f"[Webhook] error: {e}", flush=True)
     return "ok"
+
+
+LOGIN_PAGE_HTML = """<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>כניסה</title>
+<style>body{font-family:system-ui,sans-serif;max-width:380px;margin:48px auto;padding:24px;background:#0b0d12;color:#dde1ec;}
+label{display:block;font-size:14px;margin-bottom:6px;color:#5a6378}
+input{width:100%;box-sizing:border-box;padding:12px;margin-bottom:14px;border-radius:10px;border:1px solid #252b3b;background:#1a1e2a;color:#dde1ec;font-size:16px}
+button{width:100%;padding:14px;background:#25d366;color:#000;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}
+.err{color:#e74c3c;margin-top:10px;font-size:14px}
+h2{margin-bottom:18px;font-size:20px}</style></head>
+<body>
+<h2>כניסה לפאנל</h2>
+<form method="post">
+<label for="pw">סיסמה (ADMIN_PASSWORD)</label>
+<input id="pw" type="password" name="password" required autocomplete="current-password">
+{% if err %}<div class="err">{{ err }}</div>{% endif %}
+<button type="submit">כניסה</button>
+</form>
+<p style="margin-top:20px;font-size:12px;color:#5a6378">ניתן להדביק גם את ADMIN_TOKEN בשדה הסיסמה, או לשלוח Authorization: Bearer בקריאות API</p>
+</body></html>"""
+
+
+@app.route("/health")
+def health_check():
+    return jsonify({"ok": True})
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    if not AUTH_CONFIGURED:
+        return redirect(url_for("dashboard"))
+    if session.get("admin"):
+        return redirect(request.args.get("next") or url_for("dashboard"))
+    err = None
+    if request.method == "POST" and (ADMIN_PASSWORD or ADMIN_TOKEN):
+        pw = request.form.get("password", "")
+        ok_pw = ADMIN_PASSWORD and hmac.compare_digest(
+            hashlib.sha256(pw.encode("utf-8")).digest(),
+            hashlib.sha256(ADMIN_PASSWORD.encode("utf-8")).digest(),
+        )
+        ok_tok = ADMIN_TOKEN and hmac.compare_digest(
+            hashlib.sha256(pw.encode("utf-8")).digest(),
+            hashlib.sha256(ADMIN_TOKEN.encode("utf-8")).digest(),
+        )
+        if ok_pw or ok_tok:
+            session["admin"] = True
+            return redirect(request.args.get("next") or url_for("dashboard"))
+        err = "סיסמה שגויה"
+    return render_template_string(LOGIN_PAGE_HTML, err=err)
+
+
+def _last_msg_ts_key(last_msg):
+    if not last_msg:
+        return 0.0
+    s = (last_msg.get("ts") or "").replace("Z", "+00:00")
+    if not s:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
 
 # ─── API ──────────────────────────────────────────────────────
 @app.route("/api/chats")
 def api_chats():
     search = request.args.get("q", "").strip().lower()
-    all_phones = set(list(chat_history.keys()) + list(bot_enabled.keys()))
-    result = []
-    for phone in all_phones:
-        if is_group(phone + "@c.us"):
-            continue
-        history = chat_history.get(phone, [])
-        last = history[-1] if history else None
-
-        # חיפוש
-        if search:
-            phone_match = search in phone.replace("972","0",1)
-            text_match  = any(search in h["message"].lower() for h in history)
-            if not phone_match and not text_match:
+    with state_lock:
+        all_phones = set(list(chat_history.keys()) + list(bot_enabled.keys()))
+        snapshot = []
+        for phone in all_phones:
+            if is_group(phone + "@c.us"):
                 continue
-
-        result.append({
-            "phone":         phone,
-            "bot_active":    bot_enabled.get(phone, False),
-            "greeting_sent": greeting_sent.get(phone, False),
-            "last_message":  last,
-            "history":       history,
-            "step":          sessions.get(phone, {}).get("step", "active")
-        })
-
-    # מיין: בוט פעיל קודם, אחר כך לפי זמן
-    def sort_key(c):
-        active = 0 if c["bot_active"] else 1
-        t = c["last_message"]["time"] if c["last_message"] else "00:00"
-        return (active, t)
-
-    result.sort(key=sort_key, reverse=False)
-    result = list(reversed(result))
-    return jsonify(result)
+            history = list(chat_history.get(phone, []))
+            last = history[-1] if history else None
+            if search:
+                phone_match = search in phone.replace("972", "0", 1)
+                text_match = any(search in h["message"].lower() for h in history)
+                if not phone_match and not text_match:
+                    continue
+            snapshot.append({
+                "phone": phone,
+                "bot_active": bot_enabled.get(phone, False),
+                "greeting_sent": greeting_sent.get(phone, False),
+                "last_message": last,
+                "history": history,
+                "step": sessions.get(phone, {}).get("step", "active"),
+            })
+    with state_lock:
+        g_on = global_bot_on
+    for c in snapshot:
+        c["_sort"] = (
+            0 if (c["bot_active"] and g_on) else 1,
+            -_last_msg_ts_key(c["last_message"]),
+        )
+    snapshot.sort(key=lambda c: c["_sort"])
+    for c in snapshot:
+        del c["_sort"]
+    return jsonify(snapshot)
 
 
 @app.route("/api/global-toggle", methods=["POST"])
 def api_global_toggle():
     global global_bot_on
-    global_bot_on = not global_bot_on
+    with state_lock:
+        global_bot_on = not global_bot_on
+        v = global_bot_on
     save_data()
-    return jsonify({"global_bot_on": global_bot_on})
+    return jsonify({"global_bot_on": v})
 
 
 @app.route("/api/global-status")
 def api_global_status():
-    return jsonify({"global_bot_on": global_bot_on})
+    with state_lock:
+        v = global_bot_on
+    return jsonify({"global_bot_on": v})
 
 
 @app.route("/api/toggle/<path:phone>", methods=["POST"])
 def api_toggle(phone):
-    was_active = bot_enabled.get(phone, False)
-    bot_enabled[phone] = not was_active
-    now_active = bot_enabled[phone]
-    if now_active and not greeting_sent.get(phone, False):
-        sent = send_message(phone, GREETING_MSG)
-        if sent:
-            greeting_sent[phone] = True
-            add_to_history(phone, "bot", GREETING_MSG)
-            sessions.setdefault(phone, {"step": "active", "data": {}})
+    with state_lock:
+        bot_enabled[phone] = not bot_enabled.get(phone, False)
+        now_active = bot_enabled[phone]
+        need_greeting = now_active and not greeting_sent.get(phone, False)
     if not now_active:
         cancel_reminder(phone)
+        save_data()
+        return jsonify({"phone": phone, "bot_active": now_active})
+    if need_greeting:
+        sent = send_message(phone, GREETING_MSG)
+        if sent:
+            with state_lock:
+                greeting_sent[phone] = True
+                sessions.setdefault(phone, {"step": "active", "data": {}})
+            add_to_history(phone, "bot", GREETING_MSG)
+        else:
+            with state_lock:
+                bot_enabled[phone] = False
+                now_active = False
+    save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
 
@@ -416,43 +629,47 @@ def api_add_contact():
         phone = "972" + phone[1:]
     if not phone.startswith("972"):
         phone = "972" + phone
-    # הוסף לפאנל בלי להפעיל בוט
-    if phone not in chat_history:
-        chat_history[phone] = []
-    bot_enabled.setdefault(phone, False)
-    sessions.setdefault(phone, {"step": "active", "data": {}})
+    with state_lock:
+        chat_history.setdefault(phone, [])
+        bot_enabled.setdefault(phone, False)
+        sessions.setdefault(phone, {"step": "active", "data": {}})
+    save_data()
     return jsonify({"ok": True, "phone": phone})
 
 
 @app.route("/api/resend-last/<path:phone>", methods=["POST"])
 def api_resend_last(phone):
     """שלח שוב את ההודעה האחרונה של הבוט"""
-    history = chat_history.get(phone, [])
+    with state_lock:
+        history = list(chat_history.get(phone, []))
     bot_msgs = [h for h in history if h["sender"] == "bot"]
     if not bot_msgs:
         return jsonify({"ok": False, "error": "אין הודעות בוט"})
     last_msg = bot_msgs[-1]["message"]
-    # הסר תזכורת prefix
     if last_msg.startswith("[תזכורת] "):
         last_msg = last_msg[9:]
     sent = send_message(phone, last_msg)
     if sent:
         add_to_history(phone, "bot", f"[נשלח שוב] {last_msg}")
+        save_data()
     return jsonify({"ok": sent})
 
 
 @app.route("/api/service-calls")
 def api_service_calls():
-    return jsonify(service_calls)
+    with state_lock:
+        return jsonify(list(service_calls))
 
 
 @app.route("/api/service-calls/<int:call_id>/status", methods=["POST"])
 def api_update_status(call_id):
     data = request.get_json(force=True)
-    for call in service_calls:
-        if call["id"] == call_id:
-            call["status"] = data.get("status", "")
-            return jsonify({"ok": True})
+    with state_lock:
+        for call in service_calls:
+            if call["id"] == call_id:
+                call["status"] = data.get("status", "")
+                save_data()
+                return jsonify({"ok": True})
     return jsonify({"ok": False}), 404
 
 
@@ -595,13 +812,14 @@ input:checked+.tsl:before{transform:translateX(-15px)}
 <script>
 let chats=[], calls=[], sel=null, globalOn=true;
 const TYPE_ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
+function api(u,o){return fetch(u,Object.assign({},o||{},{credentials:'include'}));}
 
 async function load(){
   const q=document.getElementById('search').value;
   const [cr,sr,gr]=await Promise.all([
-    fetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
-    fetch('/api/service-calls'),
-    fetch('/api/global-status')
+    api('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
+    api('/api/service-calls'),
+    api('/api/global-status')
   ]);
   chats=await cr.json(); calls=await sr.json(); const gs=await gr.json();
   globalOn=gs.global_bot_on;
@@ -680,16 +898,16 @@ function renderWin(c){
 }
 
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
-async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
-async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
+async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
 async function resendLast(phone){
-  const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
+  const r=await api('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
   if(!d.ok)alert('אין הודעה לשליחה חוזרת');
   else await load();
 }
 async function updateStatus(id,status){
-  await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  await api('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
 }
 function openAddContact(){document.getElementById('modal').classList.add('open');document.getElementById('contact-phone').focus();}
@@ -697,7 +915,7 @@ function closeModal(){document.getElementById('modal').classList.remove('open');
 async function addContact(){
   const phone=document.getElementById('contact-phone').value.trim();
   if(!phone){alert('הזן מספר');return;}
-  const r=await fetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const r=await api('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const d=await r.json();
   if(d.ok){closeModal();await load();pick(d.phone);}
   else alert(d.error||'שגיאה');
@@ -844,13 +1062,14 @@ input:checked+.tsl:before{transform:translateX(-17px)}
 <script>
 let chats=[], calls=[], cvPhone=null, globalOn=true;
 const TYPE_ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
+function api(u,o){return fetch(u,Object.assign({},o||{},{credentials:'include'}));}
 
 async function load(){
   const q=document.getElementById('search').value;
   const [cr,sr,gr]=await Promise.all([
-    fetch('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
-    fetch('/api/service-calls'),
-    fetch('/api/global-status')
+    api('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
+    api('/api/service-calls'),
+    api('/api/global-status')
   ]);
   chats=await cr.json(); calls=await sr.json(); const gs=await gr.json();
   globalOn=gs.global_bot_on;
@@ -933,18 +1152,18 @@ function updateCV(c){
 }
 
 function closeChat(){document.getElementById('chat-view').classList.remove('active');cvPhone=null;}
-async function cvToggle(){if(cvPhone){await fetch('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
+async function cvToggle(){if(cvPhone){await api('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
 async function resendLast(){if(cvPhone)await resendLastFor(cvPhone);}
 async function resendLastFor(phone){
-  const r=await fetch('/api/resend-last/'+phone,{method:'POST'});
+  const r=await api('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
   if(!d.ok)alert('אין הודעה לשליחה חוזרת');
   else{await load();if(cvPhone===phone){const c=chats.find(c=>c.phone===phone);if(c)updateCV(c);}}
 }
-async function tog(phone){await fetch('/api/toggle/'+phone,{method:'POST'});await load();}
-async function toggleGlobal(){await fetch('/api/global-toggle',{method:'POST'});await load();}
+async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
+async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
 async function updateStatus(id,status){
-  await fetch('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  await api('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
   await load();
 }
 function openModal(){document.getElementById('modal').classList.add('open');setTimeout(()=>document.getElementById('m-phone').focus(),100);}
@@ -952,7 +1171,7 @@ function closeModal(){document.getElementById('modal').classList.remove('open');
 async function addContact(){
   const phone=document.getElementById('m-phone').value.trim();
   if(!phone){alert('הזן מספר');return;}
-  const r=await fetch('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const r=await api('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const d=await r.json();
   if(d.ok){closeModal();await load();openChat(d.phone);}
   else alert(d.error||'שגיאה');
@@ -1079,6 +1298,9 @@ def mobile():
 
 def polling_loop():
     """משאל את Green API כל 3 שניות להודעות חדשות"""
+    if not GREEN_API_URL or not GREEN_API_TOKEN:
+        print("[Polling] מנוטרל — חסרים GREEN_API_INSTANCE / GREEN_API_TOKEN", flush=True)
+        return
     url_receive = f"{GREEN_API_URL}/receiveNotification/{GREEN_API_TOKEN}"
     url_delete  = f"{GREEN_API_URL}/deleteNotification/{GREEN_API_TOKEN}"
 
@@ -1090,59 +1312,8 @@ def polling_loop():
                 if data:
                     receipt_id = data.get("receiptId")
                     body = data.get("body", {})
-                    webhook_type = body.get("typeWebhook", "")
-                    msg_data = body.get("messageData", {})
-                    sender   = body.get("senderData", {})
-
-                    print(f"[Polling] type={webhook_type} sender={sender}", flush=True)
-
-                    def get_phone():
-                        return sender.get("chatId", "").replace("@c.us", "")
-
-                    def parse_body():
-                        msg_type_raw = msg_data.get("typeMessage", "textMessage")
-                        type_map = {
-                            "textMessage":          ("text", lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
-                            "extendedTextMessage": ("text", lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
-                            "imageMessage":    ("image",    lambda d: "[שלח תמונה]"),
-                            "audioMessage":    ("audio",    lambda d: "[שלח הקלטה קולית]"),
-                            "videoMessage":    ("video",    lambda d: "[שלח וידאו]"),
-                            "documentMessage": ("document", lambda d: "[שלח מסמך]"),
-                            "stickerMessage":  ("sticker",  lambda d: "[שלח סטיקר]"),
-                            "locationMessage": ("text",     lambda d: "[שיתף מיקום]"),
-                            "contactMessage":  ("text",     lambda d: "[שיתף איש קשר]"),
-                        }
-                        msg_type, extractor = type_map.get(msg_type_raw, ("text", lambda d: ""))
-                        return msg_type, extractor(msg_data) or ""
-
-                    if webhook_type == "incomingMessageReceived":
-                        phone = get_phone()
-                        if phone and not is_group(phone + "@c.us"):
-                            msg_type, body_text = parse_body()
-                            if body_text:
-                                if phone not in bot_enabled:
-                                    bot_enabled[phone] = True
-                                add_to_history(phone, "client", body_text, msg_type)
-                                sessions.setdefault(phone, {"step": "active", "data": {}})
-                                save_data()
-                                if bot_enabled.get(phone, False) and global_bot_on:
-                                    reply = handle_message(phone, body_text, msg_type)
-                                    add_to_history(phone, "bot", reply)
-                                    send_message(phone, reply)
-                                    save_data()
-
-                    elif webhook_type == "outgoingMessageReceived":
-                        phone = get_phone()
-                        if phone and not is_group(phone + "@c.us"):
-                            _, body_text = parse_body()
-                            if body_text:
-                                if phone not in bot_enabled:
-                                    bot_enabled[phone] = False
-                                add_to_history(phone, "bot", body_text, "text")
-                                sessions.setdefault(phone, {"step": "active", "data": {}})
-                                save_data()
-
-                    # מחק את ההודעה מהתור
+                    print(f"[Polling] type={body.get('typeWebhook','')} sender={body.get('senderData',{})}", flush=True)
+                    process_green_event(body, receipt_id)
                     if receipt_id:
                         requests.delete(f"{url_delete}/{receipt_id}", timeout=5)
 
@@ -1152,10 +1323,10 @@ def polling_loop():
         time.sleep(3)
 
 
-# הפעל polling רק אם נדרש (למנוע כפילויות עם webhook)
+# הפעל polling רק אם נדרש (למנוע כפילויות עם webhook; ברירת מחדל כבוי)
 if USE_POLLING:
     _polling_thread = threading.Thread(target=polling_loop, daemon=True)
     _polling_thread.start()
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=FLASK_PORT)
