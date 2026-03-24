@@ -905,6 +905,9 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
+.notify-toggle{border:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
+.notify-toggle.group{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
+.notify-toggle.personal{background:rgba(100,149,237,.15);color:#6495ed;border:1px solid #6495ed}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
