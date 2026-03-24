@@ -9,6 +9,12 @@ import threading
 import time
 import os
 
+try:
+    from pymongo import MongoClient
+    MONGO_AVAILABLE = True
+except ImportError:
+    MONGO_AVAILABLE = False
+
 app = Flask(__name__)
 
 # ─── הגדרות ───────────────────────────────────────────────────
@@ -33,8 +39,6 @@ GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "").strip()
 GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://api.green-api.com").rstrip("/")
 GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}" if GREEN_API_INSTANCE else ""
 NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "").strip()
-NOTIFY_GROUP_ID      = "972529532110-1614167768@g.us"
-notify_to_group      = False  # False = שלח למספר, True = שלח לקבוצה
 BOSS_PHONE           = os.environ.get("BOSS_PHONE", "").strip()
 BUSINESS_NAME        = "שירות לקוחות"
 GREETING_MSG         = "היי! איך אפשר לעזור? 😊"
@@ -79,6 +83,24 @@ last_bot_msg_time = {}   # phone -> timestamp of last bot message
 reminder_timers   = {}   # phone -> timer thread
 
 DATA_FILE = "data.json"
+MONGO_URI = os.environ.get("MONGO_URI", "").strip()
+_mongo_col = None
+
+def _get_mongo_col():
+    global _mongo_col
+    if _mongo_col is not None:
+        return _mongo_col
+    if not MONGO_AVAILABLE or not MONGO_URI:
+        return None
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client.server_info()
+        _mongo_col = client["whatsapp_bot"]["state"]
+        print("[MongoDB] connected!", flush=True)
+        return _mongo_col
+    except Exception as e:
+        print(f"[MongoDB] connection failed: {e}", flush=True)
+        return None
 
 def save_data():
     with state_lock:
@@ -88,8 +110,18 @@ def save_data():
             "bot_enabled": bot_enabled,
             "chat_history": chat_history,
             "greeting_sent": greeting_sent,
-            "global_bot_on": global_bot_on
+            "global_bot_on": global_bot_on,
+            "notify_to_group": notify_to_group
         }
+    # שמור ל-MongoDB אם זמין
+    col = _get_mongo_col()
+    if col is not None:
+        try:
+            col.replace_one({"_id": "state"}, {"_id": "state", **payload}, upsert=True)
+            return
+        except Exception as e:
+            print(f"[MongoDB] save error: {e}", flush=True)
+    # fallback לקובץ
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -107,22 +139,37 @@ def _migrate_history_ts():
             m["ts"] = (base.replace(second=min(base.second + i, 59))).isoformat()
 
 def load_data():
-    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            with state_lock:
-                sessions      = d.get("sessions", {})
-                service_calls = d.get("service_calls", [])
-                bot_enabled   = d.get("bot_enabled", {})
-                chat_history  = d.get("chat_history", {})
-                greeting_sent = d.get("greeting_sent", {})
-                global_bot_on = d.get("global_bot_on", True)
-            _migrate_history_ts()
-            print("[Load] data loaded successfully", flush=True)
-    except Exception as e:
-        print(f"[Load] error: {e}", flush=True)
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group
+    d = None
+    # נסה MongoDB קודם
+    col = _get_mongo_col()
+    if col is not None:
+        try:
+            doc = col.find_one({"_id": "state"})
+            if doc:
+                d = doc
+                print("[MongoDB] data loaded!", flush=True)
+        except Exception as e:
+            print(f"[MongoDB] load error: {e}", flush=True)
+    # fallback לקובץ
+    if d is None:
+        try:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                print("[Load] data loaded from file", flush=True)
+        except Exception as e:
+            print(f"[Load] error: {e}", flush=True)
+    if d:
+        with state_lock:
+            sessions      = d.get("sessions", {})
+            service_calls = d.get("service_calls", [])
+            bot_enabled   = d.get("bot_enabled", {})
+            chat_history  = d.get("chat_history", {})
+            greeting_sent = d.get("greeting_sent", {})
+            global_bot_on = d.get("global_bot_on", True)
+            notify_to_group = d.get("notify_to_group", False)
+        _migrate_history_ts()
 
 load_data()
 
@@ -207,40 +254,38 @@ def is_duplicate_green_event(body, receipt_id):
                 del _seen_event_keys[k]
     return False
 
-SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה.
+SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
 
 זהות:
 - שמך גל
-- אם שואלים מי אתה: "אני גל, העוזר של רועי 😊"
-- אל תשלח ברכת שעה — היא כבר נשלחה
-
-תחום עיסוק:
-- אנחנו עוסקים אך ורק בבריכות שחייה: התקנה, תחזוקה, תיקון, שיפוץ
-- אם הלקוח מבקש משהו שלא קשור לבריכות (שטיפת חניה, עבודות אחרות וכו') — הגב בנימוס: "אנחנו מתמחים בבריכות שחייה בלבד, לא נוכל לעזור עם זה 😊"
+- אם שואלים מי אתה: "אני גל, העוזר הדיגיטלי של רועי 😊"
+- פתח תמיד עם ברכה לפי שעה (בוקר טוב / צהריים טובים / ערב טוב)
 
 סגנון:
-- עברית יומיומית, חמה וטבעית — דקדוק מדויק!
-- שים לב לנטיית פועל: "שיהיה" ולא "שתהיה", "שיבוא" ולא "שתבוא"
-- הודעות קצרות — לא יותר מ-2 שורות
-- אם הלקוח מסיים שיחה (כותב "תודה", "להתראות", "בסדר" וכו') — ענה בנימוס קצר והחזר: {"action":"cancelled"}
-- נסה לאסוף את כל הפרטים ב-1-2 שאלות
+- עברית יומיומית, חמה, נעימה וטבעית
+- הודעות קצרות וטבעיות — לא יותר מ-2-3 שורות בכל פעם
+- חמים ואכפתי אבל לא מוגזם
+- אל תשלח ברכת בוקר/ערב — ההודעה הראשונה כבר כוללת ברכה
+- נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
+- אם הלקוח מתאר תקלה — שאל: "אוי, לא נעים 😕 מה שמך, כתובת הבריכה וטלפון?"
+- אם שלח הקלטה קולית או וידאו — הגב: "תודה! 😊 שלח לי גם בטקסט: שמך, כתובת הבריכה וטלפון"
 
 הפרטים שצריך לאסוף:
 1. שם
 2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ
-4. תיאור הבעיה
+3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
+4. תיאור הבעיה או הבקשה
 5. טלפון ליצירת קשר
 
 כללים:
-- אם שלח תמונה/הקלטה/וידאו — הגב בנימוס ובקש פרטים בטקסט
+- אם שלח תמונה, הקלטה קולית, וידאו — הגב בנימוס והמשך לאסוף פרטים
 - אם לא רוצה שירות — סגור בנימוס
-- אחרי שיש את כל הפרטים — סיכום קצר ואישור
-- אחרי אישור — החזר JSON בדיוק (ללא טקסט נוסף):
+- אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
+- אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
   {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-- אם ביטל/סיים — החזר: {"action":"cancelled"}
+- אם ביטל — החזר: {"action":"cancelled"}
 - אחרת — החזר: {"action":"continue","message":"הודעה ללקוח"}
-- אל תציין מספר קריאה"""
+- אל תציין מספר קריאה בשיחה"""
 
 BOSS_SYSTEM_PROMPT = """אתה גל — עוזר אישי חכם של רועי, בעל חברת בריכות שחייה אקוופולקו.
 רועי הוא הבוס שלך. עזור לו בכל דבר — עסקי, אישי, טכני, יצירתי, או כל תחום אחר.
@@ -507,9 +552,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 "status": "ממתינה לטיפול"
             })
             reset_session(phone)
-        if notify_to_group:
-            send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
-        elif NOTIFY_PHONE:
+        if NOTIFY_PHONE:
             send_message(NOTIFY_PHONE, build_notify_message(phone, result))
         save_data()
         if is_boss:
@@ -710,24 +753,11 @@ def api_chats():
         c["_sort"] = (
             0 if (c["bot_active"] and g_on) else 1,
             -_last_msg_ts_key(c["last_message"]),
-            c.get("phone","")
         )
     snapshot.sort(key=lambda c: c["_sort"])
     for c in snapshot:
         del c["_sort"]
     return jsonify(snapshot)
-
-
-@app.route("/api/notify-toggle", methods=["POST"])
-def api_notify_toggle():
-    global notify_to_group
-    notify_to_group = not notify_to_group
-    return jsonify({"notify_to_group": notify_to_group})
-
-
-@app.route("/api/notify-status")
-def api_notify_status():
-    return jsonify({"notify_to_group": notify_to_group})
 
 
 @app.route("/api/global-toggle", methods=["POST"])
@@ -905,9 +935,6 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
-.notify-toggle{border:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
-.notify-toggle.group{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
-.notify-toggle.personal{background:rgba(100,149,237,.15);color:#6495ed;border:1px solid #6495ed}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -990,7 +1017,6 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
-    <button class="notify-toggle personal" id="notify-btn" onclick="toggleNotify()" title="החלף יעד קריאות">📨 קריאות → אישי</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1117,22 +1143,6 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
-async function loadNotifyStatus(){
-  const r=await fetch('/api/notify-status');
-  const d=await r.json();
-  const btn=document.getElementById('notify-btn');
-  if(d.notify_to_group){
-    btn.className='notify-toggle group';
-    btn.textContent='📨 קריאות → קבוצה';
-  } else {
-    btn.className='notify-toggle personal';
-    btn.textContent='📨 קריאות → אישי';
-  }
-}
-async function toggleNotify(){
-  await fetch('/api/notify-toggle',{method:'POST'});
-  await loadNotifyStatus();
-}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
@@ -1169,7 +1179,7 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();loadNotifyStatus();setInterval(load,4000);setInterval(loadNotifyStatus,5000);
+load();setInterval(load,4000);
 </script>
 </body>
 </html>"""
@@ -1412,22 +1422,6 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
-async function loadNotifyStatus(){
-  const r=await fetch('/api/notify-status');
-  const d=await r.json();
-  const btn=document.getElementById('notify-btn');
-  if(d.notify_to_group){
-    btn.className='notify-toggle group';
-    btn.textContent='📨 קריאות → קבוצה';
-  } else {
-    btn.className='notify-toggle personal';
-    btn.textContent='📨 קריאות → אישי';
-  }
-}
-async function toggleNotify(){
-  await fetch('/api/notify-toggle',{method:'POST'});
-  await loadNotifyStatus();
-}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
