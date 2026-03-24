@@ -95,8 +95,13 @@ def _get_mongo_col():
     if not MONGO_AVAILABLE or not MONGO_URI:
         return None
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.server_info()
+        client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=3000,
+            connectTimeoutMS=3000,
+            socketTimeoutMS=5000,
+            tlsAllowInvalidCertificates=False
+        )
         _mongo_col = client["whatsapp_bot"]["state"]
         print("[MongoDB] connected!", flush=True)
         return _mongo_col
@@ -139,6 +144,14 @@ def _migrate_history_ts():
             if m.get("ts"):
                 continue
             m["ts"] = (base.replace(second=min(base.second + i, 59))).isoformat()
+
+def _load_data_bg():
+    """טוען נתונים ברקע כדי לא לחסום את האפליקציה"""
+    time.sleep(2)
+    load_data()
+
+threading.Thread(target=_load_data_bg, daemon=True).start()
+
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group
@@ -620,6 +633,9 @@ def process_green_event(body, receipt_id=None):
         add_to_history(phone, "client", body_text, msg_type)
         save_data()
         with state_lock:
+            # אם המספר לא קיים ב-bot_enabled (לאחר restart) — נסמוך על AUTO_BOT_NEW_CHATS
+            if phone not in bot_enabled:
+                bot_enabled[phone] = default_bot
             allow_reply = bot_enabled.get(phone, False) and global_bot_on
         if allow_reply:
             reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
@@ -952,9 +968,13 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
-.notify-toggle{border:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
-.notify-toggle.group{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
-.notify-toggle.personal{background:rgba(100,149,237,.15);color:#6495ed;border:1px solid #6495ed}
+.notify-switch-wrap{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.notify-label{font-size:11px;font-weight:700;color:var(--muted);transition:color .2s}
+.notify-label.active{color:var(--accent)}
+.notify-switch{width:44px;height:22px;background:var(--s3);border:1px solid var(--border);border-radius:11px;cursor:pointer;position:relative;transition:background .25s;flex-shrink:0}
+.notify-switch.on{background:rgba(37,211,102,.3);border-color:var(--accent)}
+.notify-knob{position:absolute;top:3px;right:3px;width:14px;height:14px;background:#6495ed;border-radius:50%;transition:all .25s}
+.notify-switch.on .notify-knob{right:auto;left:3px;background:var(--accent)}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -1037,7 +1057,13 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
-    <button class="notify-toggle personal" id="notify-btn" onclick="toggleNotify()" title="החלף יעד קריאות">📨 קריאות → אישי</button>
+    <div class="notify-switch-wrap" title="קריאות: אישי / קבוצה">
+      <span class="notify-label" id="notify-label-left">👤 אישי</span>
+      <div class="notify-switch" id="notify-switch" onclick="toggleNotify()">
+        <div class="notify-knob" id="notify-knob"></div>
+      </div>
+      <span class="notify-label" id="notify-label-right">👥 קבוצה</span>
+    </div>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1168,10 +1194,19 @@ async function loadNotifyStatus(){
   try{
     const r=await fetch('/api/notify-status',{credentials:'include'});
     const d=await r.json();
-    const btn=document.getElementById('notify-btn');
-    if(!btn)return;
-    if(d.notify_to_group){btn.className='notify-toggle group';btn.textContent='📨 קריאות → קבוצה';}
-    else{btn.className='notify-toggle personal';btn.textContent='📨 קריאות → אישי';}
+    const sw=document.getElementById('notify-switch');
+    const ll=document.getElementById('notify-label-left');
+    const lr=document.getElementById('notify-label-right');
+    if(!sw)return;
+    if(d.notify_to_group){
+      sw.className='notify-switch on';
+      if(ll){ll.className='notify-label';}
+      if(lr){lr.className='notify-label active';}
+    } else {
+      sw.className='notify-switch';
+      if(ll){ll.className='notify-label active';}
+      if(lr){lr.className='notify-label';}
+    }
   }catch(e){}
 }
 async function toggleNotify(){
@@ -1461,10 +1496,19 @@ async function loadNotifyStatus(){
   try{
     const r=await fetch('/api/notify-status',{credentials:'include'});
     const d=await r.json();
-    const btn=document.getElementById('notify-btn');
-    if(!btn)return;
-    if(d.notify_to_group){btn.className='notify-toggle group';btn.textContent='📨 קריאות → קבוצה';}
-    else{btn.className='notify-toggle personal';btn.textContent='📨 קריאות → אישי';}
+    const sw=document.getElementById('notify-switch');
+    const ll=document.getElementById('notify-label-left');
+    const lr=document.getElementById('notify-label-right');
+    if(!sw)return;
+    if(d.notify_to_group){
+      sw.className='notify-switch on';
+      if(ll){ll.className='notify-label';}
+      if(lr){lr.className='notify-label active';}
+    } else {
+      sw.className='notify-switch';
+      if(ll){ll.className='notify-label active';}
+      if(lr){lr.className='notify-label';}
+    }
   }catch(e){}
 }
 async function toggleNotify(){
