@@ -120,15 +120,6 @@ def save_data():
             "global_bot_on": global_bot_on,
             "notify_to_group": notify_to_group
         }
-    # שמור ל-MongoDB אם זמין
-    col = _get_mongo_col()
-    if col is not None:
-        try:
-            col.replace_one({"_id": "state"}, {"_id": "state", **payload}, upsert=True)
-            return
-        except Exception as e:
-            print(f"[MongoDB] save error: {e}", flush=True)
-    # fallback לקובץ
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -555,6 +546,12 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
     if action == "open_call":
         with state_lock:
             cancel_reminder(phone)
+            # מניעת כפילויות — בדוק אם כבר נפתחה קריאה זהה ב-60 שניות האחרונות
+            now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+            recent = [c for c in service_calls if c.get("phone") == phone and c.get("opened_at","").startswith(now_str[:13])]
+            if recent:
+                print(f"[OpenCall] קריאה כפולה מ-{phone} — דילוג", flush=True)
+                return "✅ הקריאה כבר נפתחה!"
             call_id = len(service_calls) + 1
             service_calls.append({
                 "id": call_id, "phone": phone,
@@ -568,9 +565,13 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             })
             reset_session(phone)
         if notify_to_group:
-            send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
+            print(f"[Notify] שולח לקבוצה {NOTIFY_GROUP_ID}", flush=True)
+            ok = send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
+            print(f"[Notify] תוצאה: {ok}", flush=True)
         elif NOTIFY_PHONE:
-            send_message(NOTIFY_PHONE, build_notify_message(phone, result))
+            print(f"[Notify] שולח למספר {NOTIFY_PHONE}", flush=True)
+            ok = send_message(NOTIFY_PHONE, build_notify_message(phone, result))
+            print(f"[Notify] תוצאה: {ok}", flush=True)
         save_data()
         if is_boss:
             return "✅ הקריאה נפתחה ונשלח עדכון לנציג."
