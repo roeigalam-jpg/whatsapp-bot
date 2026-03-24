@@ -963,6 +963,64 @@ load();setInterval(load,4000);
 </html>"""
 
 
+def fetch_google_contacts():
+    """משיכת אנשי קשר מגוגל"""
+    global google_contacts
+    token = google_tokens.get("access_token")
+    if not token:
+        return
+    try:
+        r = requests.get(
+            "https://people.googleapis.com/v1/people/me/connections",
+            params={"personFields": "names,phoneNumbers", "pageSize": 1000},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15
+        )
+        if r.status_code == 401:
+            refresh_google_token()
+            return
+        data = r.json()
+        contacts = []
+        for p in data.get("connections", []):
+            names = p.get("names", [{}])
+            name = names[0].get("displayName", "") if names else ""
+            phones = p.get("phoneNumbers", [])
+            for ph in phones:
+                num = ph.get("value", "").replace("-","").replace(" ","").replace("+972","0").replace("972","0")
+                if num:
+                    contacts.append({"name": name, "phone": num})
+        google_contacts = contacts
+        print(f"[Google] loaded {len(contacts)} contacts", flush=True)
+    except Exception as e:
+        print(f"[Google] fetch error: {e}", flush=True)
+
+
+def refresh_google_token():
+    """רענון טוקן גוגל"""
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": google_tokens.get("refresh_token"),
+            "grant_type": "refresh_token"
+        })
+        d = r.json()
+        if "access_token" in d:
+            google_tokens["access_token"] = d["access_token"]
+            fetch_google_contacts()
+    except Exception as e:
+        print(f"[Google] refresh error: {e}", flush=True)
+
+
+def search_google_contacts(query):
+    """חיפוש איש קשר"""
+    if not google_contacts:
+        return None
+    query_lower = query.lower()
+    results = [c for c in google_contacts if query_lower in c.get("name","").lower() or query_lower in c.get("phone","")]
+    return results[:5] if results else None
+
+
 @app.route("/google-auth")
 def google_auth():
     if not GOOGLE_CLIENT_ID:
