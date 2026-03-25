@@ -9,12 +9,6 @@ import threading
 import time
 import os
 
-try:
-    from pymongo import MongoClient
-    MONGO_AVAILABLE = True
-except ImportError:
-    MONGO_AVAILABLE = False
-
 app = Flask(__name__)
 
 # ─── הגדרות ───────────────────────────────────────────────────
@@ -85,29 +79,6 @@ last_bot_msg_time = {}   # phone -> timestamp of last bot message
 reminder_timers   = {}   # phone -> timer thread
 
 DATA_FILE = "data.json"
-MONGO_URI = os.environ.get("MONGO_URI", "").strip()
-_mongo_col = None
-
-def _get_mongo_col():
-    global _mongo_col
-    if _mongo_col is not None:
-        return _mongo_col
-    if not MONGO_AVAILABLE or not MONGO_URI:
-        return None
-    try:
-        client = MongoClient(
-            MONGO_URI,
-            serverSelectionTimeoutMS=3000,
-            connectTimeoutMS=3000,
-            socketTimeoutMS=5000,
-            tlsAllowInvalidCertificates=False
-        )
-        _mongo_col = client["whatsapp_bot"]["state"]
-        print("[MongoDB] connected!", flush=True)
-        return _mongo_col
-    except Exception as e:
-        print(f"[MongoDB] connection failed: {e}", flush=True)
-        return None
 
 def save_data():
     with state_lock:
@@ -117,8 +88,7 @@ def save_data():
             "bot_enabled": bot_enabled,
             "chat_history": chat_history,
             "greeting_sent": greeting_sent,
-            "global_bot_on": global_bot_on,
-            "notify_to_group": notify_to_group
+            "global_bot_on": global_bot_on
         }
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -136,46 +106,23 @@ def _migrate_history_ts():
                 continue
             m["ts"] = (base.replace(second=min(base.second + i, 59))).isoformat()
 
-def _load_data_bg():
-    """טוען נתונים ברקע כדי לא לחסום את האפליקציה"""
-    time.sleep(2)
-    load_data()
-
-threading.Thread(target=_load_data_bg, daemon=True).start()
-
-
 def load_data():
-    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group
-    d = None
-    # נסה MongoDB קודם
-    col = _get_mongo_col()
-    if col is not None:
-        try:
-            doc = col.find_one({"_id": "state"})
-            if doc:
-                d = doc
-                print("[MongoDB] data loaded!", flush=True)
-        except Exception as e:
-            print(f"[MongoDB] load error: {e}", flush=True)
-    # fallback לקובץ
-    if d is None:
-        try:
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                print("[Load] data loaded from file", flush=True)
-        except Exception as e:
-            print(f"[Load] error: {e}", flush=True)
-    if d:
-        with state_lock:
-            sessions      = d.get("sessions", {})
-            service_calls = d.get("service_calls", [])
-            bot_enabled   = d.get("bot_enabled", {})
-            chat_history  = d.get("chat_history", {})
-            greeting_sent = d.get("greeting_sent", {})
-            global_bot_on = d.get("global_bot_on", True)
-            notify_to_group = d.get("notify_to_group", False)
-        _migrate_history_ts()
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            with state_lock:
+                sessions      = d.get("sessions", {})
+                service_calls = d.get("service_calls", [])
+                bot_enabled   = d.get("bot_enabled", {})
+                chat_history  = d.get("chat_history", {})
+                greeting_sent = d.get("greeting_sent", {})
+                global_bot_on = d.get("global_bot_on", True)
+            _migrate_history_ts()
+            print("[Load] data loaded successfully", flush=True)
+    except Exception as e:
+        print(f"[Load] error: {e}", flush=True)
 
 load_data()
 
@@ -516,7 +463,7 @@ def schedule_reminder(phone, last_msg):
             send_message(phone, last_msg)
             add_to_history(phone, "bot", f"[תזכורת] {last_msg}")
             save_data()
-    t = threading.Timer(30.0, remind)
+    t = threading.Timer(60.0, remind)
     t.daemon = True
     with state_lock:
         old = reminder_timers.pop(phone, None)
@@ -546,12 +493,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
     if action == "open_call":
         with state_lock:
             cancel_reminder(phone)
-            # מניעת כפילויות — בדוק אם כבר נפתחה קריאה זהה ב-60 שניות האחרונות
-            now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-            recent = [c for c in service_calls if c.get("phone") == phone and c.get("opened_at","").startswith(now_str[:13])]
-            if recent:
-                print(f"[OpenCall] קריאה כפולה מ-{phone} — דילוג", flush=True)
-                return "✅ הקריאה כבר נפתחה!"
             call_id = len(service_calls) + 1
             service_calls.append({
                 "id": call_id, "phone": phone,
@@ -567,11 +508,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         if notify_to_group:
             print(f"[Notify] שולח לקבוצה {NOTIFY_GROUP_ID}", flush=True)
             ok = send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
-            print(f"[Notify] תוצאה: {ok}", flush=True)
+            print(f"[Notify] קבוצה תוצאה: {ok}", flush=True)
         elif NOTIFY_PHONE:
             print(f"[Notify] שולח למספר {NOTIFY_PHONE}", flush=True)
             ok = send_message(NOTIFY_PHONE, build_notify_message(phone, result))
-            print(f"[Notify] תוצאה: {ok}", flush=True)
+            print(f"[Notify] אישי תוצאה: {ok}", flush=True)
         save_data()
         if is_boss:
             return "✅ הקריאה נפתחה ונשלח עדכון לנציג."
@@ -634,9 +575,6 @@ def process_green_event(body, receipt_id=None):
         add_to_history(phone, "client", body_text, msg_type)
         save_data()
         with state_lock:
-            # אם המספר לא קיים ב-bot_enabled (לאחר restart) — נסמוך על AUTO_BOT_NEW_CHATS
-            if phone not in bot_enabled:
-                bot_enabled[phone] = default_bot
             allow_reply = bot_enabled.get(phone, False) and global_bot_on
         if allow_reply:
             reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
@@ -785,7 +723,7 @@ def api_chats():
 def api_notify_toggle():
     global notify_to_group
     notify_to_group = not notify_to_group
-    save_data()
+    print(f"[Notify] מצב עודכן: {'קבוצה' if notify_to_group else 'אישי'}", flush=True)
     return jsonify({"notify_to_group": notify_to_group})
 
 
@@ -969,13 +907,6 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
-.notify-switch-wrap{display:flex;align-items:center;gap:6px;white-space:nowrap}
-.notify-label{font-size:11px;font-weight:700;color:var(--muted);transition:color .2s}
-.notify-label.active{color:var(--accent)}
-.notify-switch{width:44px;height:22px;background:var(--s3);border:1px solid var(--border);border-radius:11px;cursor:pointer;position:relative;transition:background .25s;flex-shrink:0}
-.notify-switch.on{background:rgba(37,211,102,.3);border-color:var(--accent)}
-.notify-knob{position:absolute;top:3px;right:3px;width:14px;height:14px;background:#6495ed;border-radius:50%;transition:all .25s}
-.notify-switch.on .notify-knob{right:auto;left:3px;background:var(--accent)}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -1058,13 +989,6 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
-    <div class="notify-switch-wrap" title="קריאות: אישי / קבוצה">
-      <span class="notify-label" id="notify-label-left">👤 אישי</span>
-      <div class="notify-switch" id="notify-switch" onclick="toggleNotify()">
-        <div class="notify-knob" id="notify-knob"></div>
-      </div>
-      <span class="notify-label" id="notify-label-right">👥 קבוצה</span>
-    </div>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1191,29 +1115,6 @@ function renderWin(c){
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
-async function loadNotifyStatus(){
-  try{
-    const r=await fetch('/api/notify-status',{credentials:'include'});
-    const d=await r.json();
-    const sw=document.getElementById('notify-switch');
-    const ll=document.getElementById('notify-label-left');
-    const lr=document.getElementById('notify-label-right');
-    if(!sw)return;
-    if(d.notify_to_group){
-      sw.className='notify-switch on';
-      if(ll){ll.className='notify-label';}
-      if(lr){lr.className='notify-label active';}
-    } else {
-      sw.className='notify-switch';
-      if(ll){ll.className='notify-label active';}
-      if(lr){lr.className='notify-label';}
-    }
-  }catch(e){}
-}
-async function toggleNotify(){
-  await fetch('/api/notify-toggle',{method:'POST',credentials:'include'});
-  await loadNotifyStatus();
-}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
@@ -1250,7 +1151,7 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();loadNotifyStatus();setInterval(load,4000);setInterval(loadNotifyStatus,5000);
+load();setInterval(load,4000);
 </script>
 </body>
 </html>"""
@@ -1493,29 +1394,6 @@ async function resendLastFor(phone){
 }
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
-async function loadNotifyStatus(){
-  try{
-    const r=await fetch('/api/notify-status',{credentials:'include'});
-    const d=await r.json();
-    const sw=document.getElementById('notify-switch');
-    const ll=document.getElementById('notify-label-left');
-    const lr=document.getElementById('notify-label-right');
-    if(!sw)return;
-    if(d.notify_to_group){
-      sw.className='notify-switch on';
-      if(ll){ll.className='notify-label';}
-      if(lr){lr.className='notify-label active';}
-    } else {
-      sw.className='notify-switch';
-      if(ll){ll.className='notify-label active';}
-      if(lr){lr.className='notify-label';}
-    }
-  }catch(e){}
-}
-async function toggleNotify(){
-  await fetch('/api/notify-toggle',{method:'POST',credentials:'include'});
-  await loadNotifyStatus();
-}
 async function syncChats(){
   const r=await api('/api/sync-chats',{method:'POST'});
   const d=await r.json();
