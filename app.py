@@ -33,8 +33,6 @@ GREEN_API_TOKEN      = os.environ.get("GREEN_API_TOKEN", "").strip()
 GREEN_API_HOST       = os.environ.get("GREEN_API_HOST", "https://api.green-api.com").rstrip("/")
 GREEN_API_URL        = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}" if GREEN_API_INSTANCE else ""
 NOTIFY_PHONE         = os.environ.get("NOTIFY_PHONE", "").strip()
-NOTIFY_GROUP_ID      = "972529532110-1614167768@g.us"
-notify_to_group      = False
 BOSS_PHONE           = os.environ.get("BOSS_PHONE", "").strip()
 BUSINESS_NAME        = "שירות לקוחות"
 GREETING_MSG         = "היי! איך אפשר לעזור? 😊"
@@ -88,7 +86,8 @@ def save_data():
             "bot_enabled": bot_enabled,
             "chat_history": chat_history,
             "greeting_sent": greeting_sent,
-            "global_bot_on": global_bot_on
+            "global_bot_on": global_bot_on,
+            "notify_to_group": notify_to_group
         }
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -107,7 +106,7 @@ def _migrate_history_ts():
             m["ts"] = (base.replace(second=min(base.second + i, 59))).isoformat()
 
 def load_data():
-    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on
+    global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -119,6 +118,7 @@ def load_data():
                 chat_history  = d.get("chat_history", {})
                 greeting_sent = d.get("greeting_sent", {})
                 global_bot_on = d.get("global_bot_on", True)
+                notify_to_group = d.get("notify_to_group", False)
             _migrate_history_ts()
             print("[Load] data loaded successfully", flush=True)
     except Exception as e:
@@ -207,38 +207,31 @@ def is_duplicate_green_event(body, receipt_id):
                 del _seen_event_keys[k]
     return False
 
-SYSTEM_PROMPT = """אתה גל — עוזר דיגיטלי של רועי, חברת בריכות שחייה אקוופולקו.
+SYSTEM_PROMPT = """אתה גל — עוזר של רועי לפתיחת קריאות שירות בבריכות שחייה.
 
-זהות:
-- שמך גל
-- אם שואלים מי אתה: "אני גל, העוזר הדיגיטלי של רועי 😊"
-- פתח תמיד עם ברכה לפי שעה (בוקר טוב / צהריים טובים / ערב טוב)
+כלל: אסוף שם, כתובת, תיאור וטלפון — ופתח קריאה. קצר וישיר.
 
 סגנון:
-- עברית יומיומית, חמה, נעימה וטבעית
-- הודעות קצרות וטבעיות — לא יותר מ-2-3 שורות בכל פעם
-- חמים ואכפתי אבל לא מוגזם
-- אל תשלח ברכת בוקר/ערב — ההודעה הראשונה כבר כוללת ברכה
-- נסה לאסוף את כל הפרטים ב-1-2 שאלות, לא פינג פונג ארוך
-- אם הלקוח מתאר תקלה — שאל: "אוי, לא נעים 😕 מה שמך, כתובת הבריכה וטלפון?"
-- אם שלח הקלטה קולית או וידאו — הגב: "תודה! 😊 שלח לי גם בטקסט: שמך, כתובת הבריכה וטלפון"
+- משפט-שניים בלבד. דקדוק: "שיהיה" לא "שתהיה".
+- אל תשלח ברכה — כבר נשלחה.
+- שאל הכל ביחד: "מה שמך, כתובת הבריכה וטלפון?"
+- אם קיבלת פרטים חלקיים — שאל רק את החסר.
+- ספור ניסיונות: אם אחרי 6 הודעות עדיין חסרים פרטים — כתוב "נראה שאין לך עניין כרגע, אנחנו כאן 😊" והחזר {"action":"cancelled"}
+- אם הלקוח אומר "תודה"/"להתראות"/"בסדר" — ענה קצר והחזר {"action":"cancelled"}
+- אם הבקשה לא קשורה לבריכות — "אנחנו מתמחים בבריכות שחייה בלבד 😊"
 
-הפרטים שצריך לאסוף:
-1. שם
-2. כתובת הבריכה (רחוב, מספר, עיר)
-3. סוג הפנייה: תקלה/תיקון, תחזוקה, בריכה חדשה, שיפוץ, או אחר
-4. תיאור הבעיה או הבקשה
-5. טלפון ליצירת קשר
+כשאתה שואל על סוג הפנייה, הוסף תפריט:
+"מה הסיבה לפנייה?
+1️⃣ תקלה/תיקון
+2️⃣ תחזוקה שוטפת
+3️⃣ בריכה חדשה
+4️⃣ שיפוץ"
+הלקוח יכול לבחור מספר או לכתוב חופשי.
 
-כללים:
-- אם שלח תמונה, הקלטה קולית, וידאו — הגב בנימוס והמשך לאסוף פרטים
-- אם לא רוצה שירות — סגור בנימוס
-- אחרי שיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור
-- אחרי אישור — החזר JSON בדיוק כך (ללא טקסט נוסף):
-  {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-- אם ביטל — החזר: {"action":"cancelled"}
-- אחרת — החזר: {"action":"continue","message":"הודעה ללקוח"}
-- אל תציין מספר קריאה בשיחה"""
+אחרי שם + כתובת + תיאור + טלפון — פתח מיד:
+{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
+אם ביטל: {"action":"cancelled"}
+אחרת: {"action":"continue","message":"..."}"""
 
 BOSS_SYSTEM_PROMPT = """אתה גל — עוזר אישי חכם של רועי, בעל חברת בריכות שחייה אקוופולקו.
 רועי הוא הבוס שלך. עזור לו בכל דבר — עסקי, אישי, טכני, יצירתי, או כל תחום אחר.
@@ -508,11 +501,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         if notify_to_group:
             print(f"[Notify] שולח לקבוצה {NOTIFY_GROUP_ID}", flush=True)
             ok = send_message(NOTIFY_GROUP_ID, build_notify_message(phone, result))
-            print(f"[Notify] קבוצה תוצאה: {ok}", flush=True)
+            print(f"[Notify] קבוצה: {ok}", flush=True)
         elif NOTIFY_PHONE:
             print(f"[Notify] שולח למספר {NOTIFY_PHONE}", flush=True)
             ok = send_message(NOTIFY_PHONE, build_notify_message(phone, result))
-            print(f"[Notify] אישי תוצאה: {ok}", flush=True)
+            print(f"[Notify] אישי: {ok}", flush=True)
         save_data()
         if is_boss:
             return "✅ הקריאה נפתחה ונשלח עדכון לנציג."
@@ -723,7 +716,8 @@ def api_chats():
 def api_notify_toggle():
     global notify_to_group
     notify_to_group = not notify_to_group
-    print(f"[Notify] מצב עודכן: {'קבוצה' if notify_to_group else 'אישי'}", flush=True)
+    save_data()
+    print(f"[Notify] מצב: {'קבוצה' if notify_to_group else 'אישי'}", flush=True)
     return jsonify({"notify_to_group": notify_to_group})
 
 
@@ -907,6 +901,13 @@ header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px
 .btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
 .btn-enable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
 .btn-disable-all{border:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:11px;font-weight:700;cursor:pointer;background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);white-space:nowrap}
+.notify-wrap{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.notify-lbl{font-size:10px;font-weight:700;color:var(--muted);transition:color .2s}
+.notify-lbl.active{color:var(--accent)}
+.notify-sw{width:40px;height:20px;background:var(--s3);border:1px solid var(--border);border-radius:10px;cursor:pointer;position:relative;transition:background .25s;flex-shrink:0}
+.notify-sw.on{background:rgba(37,211,102,.3);border-color:var(--accent)}
+.notify-knob{position:absolute;top:3px;right:3px;width:12px;height:12px;background:#6495ed;border-radius:50%;transition:all .25s}
+.notify-sw.on .notify-knob{right:auto;left:3px;background:var(--accent)}
 .stats{display:flex;gap:5px}
 .stat{background:var(--s2);border:1px solid var(--border);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--muted)}
 .stat b{color:var(--text);font-size:13px}
@@ -989,6 +990,11 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-enable-all" onclick="syncChats()" title="סנכרן שיחות מוואטסאפ">🔄 סנכרן</button>
     <button class="btn-enable-all" onclick="enableAll()" title="הפעל בוט לכל השיחות">⚡ לכולם</button>
     <button class="btn-disable-all" onclick="disableAll()" title="כבה בוט לכל השיחות">⏸ כבה לכולם</button>
+    <div class="notify-wrap" title="יעד קריאות">
+      <span class="notify-lbl active" id="nlbl-l">👤 אישי</span>
+      <div class="notify-sw" id="notify-sw" onclick="toggleNotify()"><div class="notify-knob" id="notify-knob"></div></div>
+      <span class="notify-lbl" id="nlbl-r">👥 קבוצה</span>
+    </div>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1151,7 +1157,22 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();setInterval(load,4000);
+async function loadNotify(){
+  try{
+    const d=await(await fetch('/api/notify-status',{credentials:'include'})).json();
+    const sw=document.getElementById('notify-sw');
+    const ll=document.getElementById('nlbl-l');
+    const lr=document.getElementById('nlbl-r');
+    if(!sw)return;
+    if(d.notify_to_group){sw.className='notify-sw on';ll.className='notify-lbl';lr.className='notify-lbl active';}
+    else{sw.className='notify-sw';ll.className='notify-lbl active';lr.className='notify-lbl';}
+  }catch(e){}
+}
+async function toggleNotify(){
+  await fetch('/api/notify-toggle',{method:'POST',credentials:'include'});
+  await loadNotify();
+}
+load();loadNotify();setInterval(load,4000);setInterval(loadNotify,5000);
 </script>
 </body>
 </html>"""
