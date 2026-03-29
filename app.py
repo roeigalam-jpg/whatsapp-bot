@@ -307,12 +307,14 @@ def build_system_prompt(phone=""):
 - אם פונים לשירות אחר (מזגנים, צבע, שיפוץ כללי וכו') — "אנחנו מתמחים בבריכות שחייה בלבד, לא נוכל לעזור בזה"
 
 סגנון:
-- עברית יומיומית, חמה ואנושית — כמו בן אדם שרוצה לעזור
-- מנומס אבל לא פורמלי מדי
-- מינימום אימוג'י — רק כשממש מתאים, לא יותר מאחד להודעה
-- הודעות קצרות — לא יותר מ-3 שורות
+- עברית יומיומית, חמה וטבעית — כמו שכן טוב שגם מקצוען
+- אנושי ונגיש, לא רובוטי ולא פורמלי
+- מינימום אימוג'י — רק כשממש מוסיף, לא יותר מאחד להודעה
+- הודעות קצרות וברורות — לא יותר מ-3 שורות
 - זהה מין לקוח מהשם ופנה בהתאם (את/אתה, צריכה/צריך)
-- אם הלקוח נשמע מתוסכל או יש בעיה דחופה — הראה אכפתיות קצרה לפני שממשיכים
+- אם הלקוח מתאר בעיה — הגב קודם באמפתיה קצרה ("אוי, לא נעים..." / "בטח נטפל בזה") לפני שממשיכים
+- אם הלקוח שואל שאלה כללית על בריכות — ענה בחביבות, לא רק "תפתח קריאה"
+- סיים שיחות בחיוב — "נשמח לעזור!", "תהיה בקשר!" וכד'
 
 תפריט פתיחה — שלח ללקוח חדש:
 "{greeting}! במה אוכל לעזור?
@@ -505,14 +507,30 @@ def cancel_reminder(phone):
         t.cancel()
 
 def schedule_reminder(phone, last_msg):
-    def remind():
+    def remind_first():
         with state_lock:
             on = bot_enabled.get(phone, False) and global_bot_on
-        if on:
-            send_message(phone, last_msg)
-            add_to_history(phone, "bot", f"[תזכורת] {last_msg}")
+        if not on:
+            return
+        send_message(phone, last_msg)
+        add_to_history(phone, "bot", f"[תזכורת 1] {last_msg}")
+        save_data()
+        def remind_second():
+            with state_lock:
+                on2 = bot_enabled.get(phone, False) and global_bot_on
+            if not on2:
+                return
+            msg2 = "רק לוודא — האם תרצה להמשיך ולפתוח קריאה, או שאפשר לסגור את הפנייה?"
+            send_message(phone, msg2)
+            add_to_history(phone, "bot", f"[תזכורת 2] {msg2}")
             save_data()
-    t = threading.Timer(30.0, remind)
+        t2 = threading.Timer(60.0, remind_second)
+        t2.daemon = True
+        with state_lock:
+            reminder_timers[phone] = t2
+        t2.start()
+
+    t = threading.Timer(60.0, remind_first)
     t.daemon = True
     with state_lock:
         old = reminder_timers.pop(phone, None)
