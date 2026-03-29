@@ -307,7 +307,7 @@ def build_system_prompt(phone=""):
 - הודעות קצרות וברורות — לא יותר מ-3 שורות
 - זהה מין לקוח מהשם ופנה בהתאם (את/אתה, צריכה/צריך)
 - אם הלקוח מתאר בעיה — הגב קודם באמפתיה קצרה ("אוי, לא נעים..." / "בטח נטפל בזה") לפני שממשיכים
-- לעולם אל תגיד "רועי יגיע" — תגיד תמיד "אפתח קריאה עבורך ויצרו איתך קשר בהקדם"
+- לעולם אל תזכיר שם ספציפי שיגיע — תגיד "נגיע לטפל" / "הצוות יגיע" / "ניצור איתך קשר" — בלי שמות
 - אם הלקוח שואל שאלה כללית על בריכות — ענה בחביבות, לא רק "תפתח קריאה"
 - סיים שיחות בחיוב — "נשמח לעזור!", "תהיה בקשר!" וכד'
 
@@ -1052,6 +1052,17 @@ input:checked+.tsl:before{transform:translateX(-15px)}
 .btn-cancel{background:var(--s2);color:var(--muted);border:1px solid var(--border);border-radius:7px;padding:7px 14px;font-family:inherit;font-size:13px;cursor:pointer}
 .btn-confirm{background:var(--accent);color:#000;border:none;border-radius:7px;padding:7px 14px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer}
 .notify-info{font-size:10px;color:var(--muted);padding:4px 14px;border-bottom:1px solid var(--border)}
+@media(max-width:768px){
+  .calls-panel{display:none}
+  .main{flex-direction:column}
+  .sidebar{width:100%;border-left:none;border-top:1px solid var(--border);max-height:45vh}
+  .chat-win{min-height:300px}
+  header{height:auto;padding:8px 10px;flex-wrap:wrap;gap:6px}
+  .hdr-mid{gap:4px;max-width:100%}
+  .btn-hdr{padding:5px 8px;font-size:11px}
+  .stats{gap:3px}
+  .stat{padding:3px 7px;font-size:10px}
+}
 </style>
 </head>
 <body>
