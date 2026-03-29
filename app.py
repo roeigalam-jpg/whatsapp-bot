@@ -285,9 +285,12 @@ def is_duplicate_green_event(body, receipt_id):
     return False
 
 # ─── System Prompts ───────────────────────────────────────────
-def build_system_prompt():
+def build_system_prompt(phone=""):
     greeting = get_greeting()
-    return f"""אתה גל — עוזר דיגיטלי של רועי, מומחה לבריכות שחייה.
+    phone_display = phone972(phone).replace("972", "0", 1) if phone else ""
+    phone_hint = f"\nמספר הוואטסאפ של הלקוח בשיחה הזו: {phone_display}" if phone_display else ""
+    phone_instruction = f'   שאל: "האם להשתמש במספר {phone_display} לקריאה, או מספר אחר?" — אם אישר, השתמש בו ישירות.' if phone_display else '   בקש מהלקוח מספר טלפון ישראלי תקין (05X).'
+    return f"""אתה גל — עוזר דיגיטלי של רועי, מומחה לבריכות שחייה.{phone_hint}
 
 זהות:
 - שמך גל
@@ -304,10 +307,12 @@ def build_system_prompt():
 - אם פונים לשירות אחר (מזגנים, צבע, שיפוץ כללי וכו') — "אנחנו מתמחים בבריכות שחייה בלבד, לא נוכל לעזור בזה"
 
 סגנון:
-- עברית יומיומית, קצרה, מנומסת
+- עברית יומיומית, חמה ואנושית — כמו בן אדם שרוצה לעזור
+- מנומס אבל לא פורמלי מדי
 - מינימום אימוג'י — רק כשממש מתאים, לא יותר מאחד להודעה
 - הודעות קצרות — לא יותר מ-3 שורות
 - זהה מין לקוח מהשם ופנה בהתאם (את/אתה, צריכה/צריך)
+- אם הלקוח נשמע מתוסכל או יש בעיה דחופה — הראה אכפתיות קצרה לפני שממשיכים
 
 תפריט פתיחה — שלח ללקוח חדש:
 "{greeting}! במה אוכל לעזור?
@@ -320,8 +325,9 @@ def build_system_prompt():
 1. שם מלא
 2. כתובת הבריכה (רחוב + מספר + עיר) — בדוק שנשמע הגיוני
 3. תיאור הבעיה/הבקשה
-4. טלפון ליצירת קשר — בדוק שהוא מספר ישראלי תקין (05X + 7 ספרות)
-   שאל: "האם להשתמש במספר שממנו כתבת ({{}}) לקריאה?" ואז אשר/בקש אחר
+4. טלפון ליצירת קשר:
+{phone_instruction}
+   אל תשאל שוב אחרי שאישר.
 
 כשיש לך הכל — הצג סיכום ובקש אישור.
 אחרי אישור — החזר JSON בדיוק:
@@ -332,16 +338,17 @@ def build_system_prompt():
 
 אל תציין מספר קריאה בשיחה."""
 
-BOSS_SYSTEM_PROMPT = """אתה גל — עוזר אישי של רועי, מומחה בריכות שחייה.
-רועי הוא הבוס. עזור לו בכל דבר — עסקי, טכני, אישי.
-ישיר, קצר, יעיל. עברית טבעית.
+BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי החכם של רועי.
+רועי הוא הבוס שלך. עזור לו בכל דבר ללא הגבלה — עסקי, אישי, טכני, יצירתי, מזג אוויר, תרגומים, ניסוחים, שאלות כלליות, הכל.
+אל תגביל את עצמך לנושא הבריכות — רועי צריך עוזר אישי אמיתי לכל דבר.
+ישיר, קצר, יעיל. עברית טבעית. אין צורך בפתיחות מיותרות.
 
-כשרועי מבקש לפתוח קריאה:
+כשרועי מבקש לפתוח קריאת שירות:
 {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-כשרועי מבקש לשלוח הודעה:
+כשרועי מבקש לשלוח הודעה למישהו:
 {"action":"send_message","phone":"...","message":"..."}
-אחרת:
-{"action":"continue","message":"תשובה"}"""
+בכל שאלה או בקשה אחרת:
+{"action":"continue","message":"תשובה לרועי"}"""
 
 def parse_green_msg(msg_data):
     msg_type_raw = (msg_data or {}).get("typeMessage", "textMessage")
@@ -429,7 +436,7 @@ def build_notify_message(phone, data):
         "⚡ נא לפתוח קריאה במערכת."
     ])
 
-def ask_claude(history, user_msg, msg_type="text", is_boss=False):
+def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
     if not (ANTHROPIC_KEY or "").strip():
         return {"action": "continue", "message": "שירות הבוט לא פעיל כרגע. צור קשר ישיר."}
     
@@ -453,7 +460,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False):
             else:
                 messages.append({"role": "user", "content": current_msg})
 
-            system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt()
+            system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
             resp = requests.post(
                 CLAUDE_API_URL,
                 headers={
@@ -522,7 +529,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         cancel_reminder(phone)
         history = list(chat_history.get(phone, []))
 
-    result = ask_claude(history, body, msg_type, is_boss=is_boss)
+    result = ask_claude(history, body, msg_type, is_boss=is_boss, phone=phone)
     action = result.get("action", "continue")
 
     if action == "open_call":
