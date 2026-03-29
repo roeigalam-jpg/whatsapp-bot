@@ -316,14 +316,10 @@ def build_system_prompt(phone=""):
 - אם הלקוח שואל שאלה כללית על בריכות — ענה בחביבות, לא רק "תפתח קריאה"
 - סיים שיחות בחיוב — "נשמח לעזור!", "תהיה בקשר!" וכד'
 
-תפריט פתיחה — שלח ללקוח חדש:
-"{greeting}! במה אוכל לעזור?
-1️⃣ קריאה לפרויקט
-2️⃣ תקלה/תיקון
-3️⃣ הקמת בריכה חדשה
-4️⃣ שיפוץ"
+הודעת פתיחה — שלח ללקוח חדש:
+"{greeting}! במה אפשר לעזור?"
 
-אחרי שהלקוח בחר — אסוף:
+אחרי שהלקוח מסביר — אסוף:
 1. שם מלא
 2. כתובת הבריכה (רחוב + מספר + עיר) — בדוק שנשמע הגיוני
 3. תיאור הבעיה/הבקשה
@@ -636,6 +632,9 @@ def process_green_event(body, receipt_id=None):
         if not phone or is_group(phone + "@c.us"):
             return
         msg_type, body_text = parse_green_msg(msg_data)
+        # שיחת וואטסאפ נכנסת — הוסף לרשימה גם ללא טקסט
+        if msg_type == "text" and not body_text and msg_data.get("typeMessage") == "callMessage":
+            body_text = "[התקשר בשיחת וואטסאפ]"
         if not body_text:
             return
 
@@ -656,6 +655,25 @@ def process_green_event(body, receipt_id=None):
 
         if allow_reply:
             reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
+            add_to_history(phone, "bot", reply)
+            send_message(phone, reply)
+            save_data()
+
+    elif webhook_type == "incomingCall":
+        phone = sender.get("chatId", "").replace("@c.us", "")
+        if not phone or is_group(phone + "@c.us"):
+            return
+        with state_lock:
+            chat_history.setdefault(phone, [])
+            bot_enabled.setdefault(phone, is_boss_phone(phone))
+            sessions.setdefault(phone, {"step": "active", "data": {}})
+        add_to_history(phone, "client", "[התקשר בשיחת וואטסאפ]", "call")
+        save_data()
+        # ענה אם הבוט פעיל
+        with state_lock:
+            allow_reply = bot_enabled.get(phone, False) and global_bot_on
+        if allow_reply:
+            reply = handle_message(phone, "[התקשר בשיחת וואטסאפ]", "text", phone=phone)
             add_to_history(phone, "bot", reply)
             send_message(phone, reply)
             save_data()
