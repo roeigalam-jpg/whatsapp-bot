@@ -58,10 +58,34 @@ ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_KEY", "")
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL   = "claude-sonnet-4-20250514"
 
-# ─── JSONBin ──────────────────────────────────────────────────
-JSONBIN_API_KEY = os.environ.get("JSONBIN_API_KEY", "").strip()
-JSONBIN_BIN_ID  = os.environ.get("JSONBIN_BIN_ID", "").strip()
-JSONBIN_BASE    = "https://api.jsonbin.io/v3/b"
+# ─── Firebase Firestore ───────────────────────────────────────
+FIREBASE_PROJECT_ID  = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
+FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+FIRESTORE_DOC        = "bot-data/state"
+
+_db = None
+
+def _get_db():
+    global _db
+    if _db is not None:
+        return _db
+    if not FIREBASE_PROJECT_ID or not FIREBASE_CREDENTIALS:
+        return None
+    try:
+        import google.auth
+        from google.oauth2 import service_account
+        from google.cloud import firestore
+        creds_dict = json.loads(FIREBASE_CREDENTIALS)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        _db = firestore.Client(project=FIREBASE_PROJECT_ID, credentials=creds)
+        print("[Firestore] connected", flush=True)
+    except Exception as e:
+        print(f"[Firestore] init error: {e}", flush=True)
+        _db = None
+    return _db
 
 state_lock  = threading.RLock()
 _seen_event_keys = {}
@@ -75,17 +99,11 @@ bot_enabled   = {}
 chat_history  = {}
 greeting_sent = {}
 global_bot_on = True
-notify_to_group_state = False   # נשמר ב-JSONBin
+notify_to_group_state = False
 last_bot_msg_time = {}
 reminder_timers   = {}
 
-# ─── JSONBin שמירה/טעינה ──────────────────────────────────────
-def _jsonbin_headers():
-    return {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_API_KEY
-    }
-
+# ─── Firestore שמירה/טעינה ────────────────────────────────────
 def save_data():
     with state_lock:
         payload = {
@@ -103,36 +121,30 @@ def save_data():
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save/local] error: {e}", flush=True)
-    # שמור JSONBin אם מוגדר
-    if JSONBIN_API_KEY and JSONBIN_BIN_ID:
+    # שמור Firestore
+    db = _get_db()
+    if db:
         try:
-            r = requests.put(
-                f"{JSONBIN_BASE}/{JSONBIN_BIN_ID}",
-                headers=_jsonbin_headers(),
-                json=payload,
-                timeout=10
-            )
-            if r.status_code not in (200, 201):
-                print(f"[JSONBin] save error: {r.status_code} {r.text[:80]}", flush=True)
+            col, doc = FIRESTORE_DOC.split("/")
+            db.collection(col).document(doc).set(payload)
+            print("[Firestore] saved", flush=True)
         except Exception as e:
-            print(f"[JSONBin] save exception: {e}", flush=True)
+            print(f"[Firestore] save error: {e}", flush=True)
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group_state
     loaded = None
-    # נסה JSONBin קודם
-    if JSONBIN_API_KEY and JSONBIN_BIN_ID:
+    # נסה Firestore קודם
+    db = _get_db()
+    if db:
         try:
-            r = requests.get(
-                f"{JSONBIN_BASE}/{JSONBIN_BIN_ID}/latest",
-                headers=_jsonbin_headers(),
-                timeout=10
-            )
-            if r.status_code == 200:
-                loaded = r.json().get("record", {})
-                print("[JSONBin] data loaded from cloud", flush=True)
+            col, doc = FIRESTORE_DOC.split("/")
+            snap = db.collection(col).document(doc).get()
+            if snap.exists:
+                loaded = snap.to_dict()
+                print("[Firestore] data loaded from cloud", flush=True)
         except Exception as e:
-            print(f"[JSONBin] load error: {e}", flush=True)
+            print(f"[Firestore] load error: {e}", flush=True)
     # fallback לקובץ מקומי
     if not loaded:
         try:
@@ -151,24 +163,6 @@ def load_data():
             greeting_sent      = loaded.get("greeting_sent", {})
             global_bot_on      = loaded.get("global_bot_on", True)
             notify_to_group_state = loaded.get("notify_to_group", False)
-
-def create_jsonbin():
-    """יצירת Bin חדש ב-JSONBin — קרא פעם אחת בהתקנה"""
-    if not JSONBIN_API_KEY:
-        return None, "חסר JSONBIN_API_KEY"
-    try:
-        r = requests.post(
-            JSONBIN_BASE,
-            headers={**_jsonbin_headers(), "X-Bin-Name": "whatsapp-bot-data", "X-Bin-Private": "true"},
-            json={"init": True},
-            timeout=10
-        )
-        if r.status_code in (200, 201):
-            bin_id = r.json().get("metadata", {}).get("id", "")
-            return bin_id, None
-        return None, f"status {r.status_code}: {r.text[:100]}"
-    except Exception as e:
-        return None, str(e)
 
 load_data()
 
@@ -897,7 +891,7 @@ def api_toggle(phone):
         save_data()
         return jsonify({"phone": phone, "bot_active": now_active})
     if need_greeting:
-        greet = f"{get_greeting()}! במה אוכל לעזור?\n1️⃣ קריאה לפרויקט\n2️⃣ תקלה/תיקון\n3️⃣ הקמת בריכה חדשה\n4️⃣ שיפוץ"
+        greet = f"{get_greeting()}! במה אפשר לעזור?"
         sent = send_message(phone, greet)
         if sent:
             with state_lock:
@@ -959,15 +953,7 @@ def api_update_status(call_id):
                 return jsonify({"ok": True})
     return jsonify({"ok": False}), 404
 
-@app.route("/api/setup-jsonbin", methods=["POST"])
-def api_setup_jsonbin():
-    """יצירת JSONBin חדש — קרא פעם אחת"""
-    if not JSONBIN_API_KEY:
-        return jsonify({"ok": False, "error": "חסר JSONBIN_API_KEY בסביבה"})
-    bin_id, err = create_jsonbin()
-    if err:
-        return jsonify({"ok": False, "error": err})
-    return jsonify({"ok": True, "bin_id": bin_id, "note": "הוסף JSONBIN_BIN_ID לסביבת Render"})
+
 
 # ─── Dashboard ────────────────────────────────────────────────
 DASHBOARD = r"""<!DOCTYPE html>
