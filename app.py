@@ -1329,10 +1329,287 @@ load();setInterval(load,4000);
 </body>
 </html>"""
 
+
+MOBILE = r"""<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>מרכז שירות</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;900&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{--bg:#0b0d12;--s1:#13161f;--s2:#1a1e2a;--s3:#222736;--border:#252b3b;--accent:#25d366;--text:#dde1ec;--muted:#5a6378;--danger:#e74c3c;}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column}
+.hdr{background:var(--s1);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0}
+.hdr-icon{width:30px;height:30px;background:linear-gradient(135deg,#25d366,#128c7e);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.hdr-title{font-weight:800;font-size:15px;flex:1}
+.btn-hm{border:none;border-radius:16px;padding:5px 11px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
+.btn-global.on{background:rgba(37,211,102,.15);color:var(--accent);border:1px solid var(--accent)}
+.btn-global.off{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
+.btn-notify.group{background:rgba(52,152,219,.2);color:#3498db;border:1px solid #3498db}
+.btn-notify.personal{background:rgba(155,89,182,.2);color:#9b59b6;border:1px solid #9b59b6}
+.tabs{display:flex;background:var(--s1);border-bottom:1px solid var(--border);flex-shrink:0}
+.tab{flex:1;padding:11px;text-align:center;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.search-wrap{padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);flex-shrink:0}
+.search-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:9px 13px;color:var(--text);font-family:inherit;font-size:15px;outline:none}
+.search-input:focus{border-color:var(--accent)}
+.search-input::placeholder{color:var(--muted)}
+.pages{flex:1;overflow:hidden;position:relative}
+.page{display:none;position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.page.active{display:block}
+.add-btn-wrap{padding:10px 12px 4px}
+.btn-add-full{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:11px;font-family:inherit;font-size:14px;font-weight:600;color:var(--accent);cursor:pointer;text-align:center}
+.cards{padding:8px 12px 80px;display:flex;flex-direction:column;gap:8px}
+.card{background:var(--s1);border:1px solid var(--border);border-radius:13px;overflow:hidden}
+.card.on{border-color:rgba(37,211,102,.35)}
+.card-top{padding:12px 13px;display:flex;align-items:center;gap:10px}
+.av{width:38px;height:38px;border-radius:50%;background:var(--s2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;position:relative}
+.dot{position:absolute;bottom:-1px;left:-1px;width:12px;height:12px;border-radius:50%;border:2px solid var(--s1);background:var(--muted)}
+.dot.on{background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.ci{flex:1;min-width:0}
+.ci-phone{font-weight:700;font-size:14px;margin-bottom:2px}
+.ci-last{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tgl{position:relative;width:38px;height:21px;display:inline-block;flex-shrink:0}
+.tgl input{opacity:0;width:0;height:0}
+.tsl{position:absolute;cursor:pointer;inset:0;background:var(--border);border-radius:21px;transition:.25s}
+.tsl:before{content:"";position:absolute;height:15px;width:15px;right:3px;bottom:3px;background:#fff;border-radius:50%;transition:.25s}
+input:checked+.tsl{background:var(--accent)}
+input:checked+.tsl:before{transform:translateX(-17px)}
+.card-btns{border-top:1px solid var(--border);display:flex}
+.card-btn{flex:1;background:none;border:none;padding:9px;font-family:inherit;font-size:12px;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
+.card-btn:not(:last-child){border-left:1px solid var(--border)}
+.card-btn:active{background:var(--s2)}
+.call-cards{padding:8px 12px 80px}
+.call-card{background:var(--s1);border:1px solid var(--border);border-radius:13px;padding:13px;margin-bottom:9px;font-size:12px}
+.call-id{font-size:10px;color:var(--muted);margin-bottom:4px}
+.call-name{font-weight:700;font-size:14px;margin-bottom:3px}
+.call-type{color:var(--accent);font-size:11px;margin-bottom:7px}
+.call-row{color:var(--muted);margin-bottom:3px}
+.call-row span{color:var(--text)}
+.status-sel{margin-top:9px;width:100%;background:var(--s3);border:1px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:13px;outline:none;cursor:pointer}
+.chat-view{display:none;position:fixed;inset:0;background:var(--bg);flex-direction:column;z-index:200}
+.chat-view.open{display:flex}
+.chat-hdr{padding:11px 14px;background:var(--s1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;flex-shrink:0}
+.back-btn{background:none;border:none;color:var(--accent);font-size:24px;cursor:pointer;padding:0 4px;line-height:1}
+.chat-hdr-info{flex:1;min-width:0}
+.chat-hdr-phone{font-weight:700;font-size:15px}
+.chat-hdr-sub{font-size:10px;color:var(--muted)}
+.chat-hdr-btns{display:flex;gap:6px;align-items:center}
+.btn-xs{border:none;border-radius:7px;padding:5px 10px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
+.btn-act{background:var(--accent);color:#000}
+.btn-deact{background:var(--s2);color:var(--muted);border:1px solid var(--border)}
+.msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:6px;-webkit-overflow-scrolling:touch}
+.msg{max-width:82%;padding:8px 11px;border-radius:11px;font-size:13px;line-height:1.5;white-space:pre-wrap}
+.msg.client{background:var(--s2);border:1px solid var(--border);align-self:flex-end;border-bottom-right-radius:3px}
+.msg.bot{background:#172e20;border:1px solid rgba(37,211,102,.2);align-self:flex-start;border-bottom-left-radius:3px}
+.msg-time{font-size:9px;color:var(--muted);margin-top:2px}
+.msg.client .msg-time{text-align:right}
+.empty{padding:40px 20px;text-align:center;color:var(--muted)}
+.empty-icon{font-size:40px;opacity:.3;margin-bottom:8px}
+.badge{padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;background:var(--s2);color:var(--muted);border:1px solid var(--border)}
+.badge.on{background:rgba(37,211,102,.12);color:var(--accent);border-color:rgba(37,211,102,.4)}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:300;align-items:flex-end}
+.modal-bg.open{display:flex}
+.modal{background:var(--s1);border-top:1px solid var(--border);border-radius:20px 20px 0 0;padding:20px;width:100%}
+.modal h3{margin-bottom:14px;font-size:16px}
+.modal input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-family:inherit;font-size:15px;outline:none;margin-bottom:12px;direction:ltr}
+.modal input:focus{border-color:var(--accent)}
+.modal-btns{display:flex;gap:8px}
+.btn-cancel{flex:1;background:var(--s2);color:var(--muted);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:inherit;font-size:14px;cursor:pointer}
+.btn-confirm{flex:2;background:var(--accent);color:#000;border:none;border-radius:10px;padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="hdr-icon">🔧</div>
+  <div class="hdr-title">מרכז שירות</div>
+  <button class="btn-hm btn-global on" id="g-btn" onclick="toggleGlobal()">🟢</button>
+  <button class="btn-hm btn-notify personal" id="n-btn" onclick="toggleNotify()">📨</button>
+  <button class="btn-hm" style="background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent)" onclick="syncChats()">🔄</button>
+  <button class="btn-hm" style="background:rgba(37,211,102,.2);color:var(--accent);border:1px solid var(--accent)" onclick="enableAll()">⚡</button>
+</div>
+<div class="tabs">
+  <div class="tab active" id="tab-clients" onclick="showTab('clients')">👥 לקוחות</div>
+  <div class="tab" id="tab-calls" onclick="showTab('calls')">🔧 קריאות <span id="calls-badge"></span></div>
+</div>
+<div class="search-wrap">
+  <input class="search-input" id="search" placeholder="🔍 חפש מספר..." oninput="load()" autocomplete="off">
+</div>
+<div class="pages">
+  <div class="page active" id="page-clients">
+    <div class="add-btn-wrap">
+      <button class="btn-add-full" onclick="openModal()">+ הוסף לקוח חדש</button>
+    </div>
+    <div class="cards" id="cards"></div>
+  </div>
+  <div class="page" id="page-calls">
+    <div class="call-cards" id="call-cards"></div>
+  </div>
+</div>
+<div class="chat-view" id="chat-view">
+  <div class="chat-hdr">
+    <button class="back-btn" onclick="closeChat()">‹</button>
+    <div class="chat-hdr-info">
+      <div class="chat-hdr-phone" id="cv-phone"></div>
+      <div class="chat-hdr-sub" id="cv-sub"></div>
+    </div>
+    <div class="chat-hdr-btns">
+      <span class="badge" id="cv-badge">כבוי</span>
+      <label class="tgl"><input type="checkbox" id="cv-tgl" onchange="cvToggle()"><span class="tsl"></span></label>
+    </div>
+  </div>
+  <div class="msgs" id="cv-msgs"></div>
+</div>
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3>📞 לקוח חדש</h3>
+    <input id="m-phone" placeholder="05XXXXXXXX" type="tel" inputmode="numeric">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal()">ביטול</button>
+      <button class="btn-confirm" onclick="addContact()">הוסף</button>
+    </div>
+  </div>
+</div>
+<script>
+let chats=[],calls=[],cvPhone=null,globalOn=true,notifyGroup=false;
+const ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
+function api(u,o){return fetch(u,Object.assign({credentials:'include'},o||{}));}
+async function load(){
+  const q=(document.getElementById('search').value||'').trim();
+  try{
+    const [cr,sr,gr]=await Promise.all([
+      api('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
+      api('/api/service-calls'),api('/api/global-status')]);
+    chats=await cr.json();calls=await sr.json();const gs=await gr.json();
+    globalOn=gs.global_bot_on;notifyGroup=gs.notify_to_group;
+    const gb=document.getElementById('g-btn');
+    if(globalOn){gb.className='btn-hm btn-global on';gb.textContent='🟢';}
+    else{gb.className='btn-hm btn-global off';gb.textContent='🔴';}
+    const nb=document.getElementById('n-btn');
+    if(notifyGroup){nb.className='btn-hm btn-notify group';nb.textContent='👥';}
+    else{nb.className='btn-hm btn-notify personal';nb.textContent='📨';}
+    document.getElementById('calls-badge').textContent=calls.length?` (${calls.length})`:'';
+    renderCards();renderCalls();
+    if(cvPhone){const c=chats.find(x=>x.phone===cvPhone);if(c)updateCV(c);}
+  }catch(e){console.error(e);}
+}
+function showTab(t){
+  ['clients','calls'].forEach(x=>{
+    document.getElementById('tab-'+x).classList.toggle('active',x===t);
+    document.getElementById('page-'+x).classList.toggle('active',x===t);
+  });
+}
+function renderCards(){
+  const el=document.getElementById('cards');
+  if(!chats.length){el.innerHTML='<div class="empty"><div class="empty-icon">💬</div><div>אין שיחות</div></div>';return;}
+  el.innerHTML=chats.map(c=>`
+    <div class="card${c.bot_active?' on':''}">
+      <div class="card-top">
+        <div class="av">👤<div class="dot${c.bot_active&&globalOn?' on':''}"></div></div>
+        <div class="ci">
+          <div class="ci-phone">${fmt(c.phone)}</div>
+          <div class="ci-last">${c.last_message?(ICONS[c.last_message.type]||'')+' '+esc(c.last_message.message).substring(0,38):'ממתין...'}</div>
+        </div>
+        <label class="tgl" onclick="event.stopPropagation()">
+          <input type="checkbox"${c.bot_active?' checked':''} onchange="tog('${c.phone}')"><span class="tsl"></span>
+        </label>
+      </div>
+      <div class="card-btns">
+        <button class="card-btn" onclick="openChat('${c.phone}')">💬 ${(c.history||[]).length}</button>
+        <button class="card-btn" onclick="resendFor('${c.phone}')">🔄 שוב</button>
+      </div>
+    </div>`).join('');
+}
+function renderCalls(){
+  const el=document.getElementById('call-cards');
+  if(!calls.length){el.innerHTML='<div class="empty"><div class="empty-icon">🔧</div><div>אין קריאות</div></div>';return;}
+  el.innerHTML=[...calls].reverse().map(c=>`
+    <div class="call-card">
+      <div class="call-id">#${c.id} — ${c.opened_at}</div>
+      <div class="call-name">👤 ${esc(c.name)}</div>
+      <div class="call-type">🔧 ${esc(c.call_type)}</div>
+      <div class="call-row">📞 <span>${esc(c.contact_phone)}</span></div>
+      <div class="call-row">📍 <span>${esc(c.address)}</span></div>
+      <div class="call-row">📝 <span>${esc(c.description)}</span></div>
+      <select class="status-sel" onchange="updateStatus(${c.id},this.value)">
+        <option${c.status==='ממתינה לטיפול'?' selected':''}>ממתינה לטיפול</option>
+        <option${c.status==='בטיפול'?' selected':''}>בטיפול</option>
+        <option${c.status==='הושלמה'?' selected':''}>הושלמה</option>
+        <option${c.status==='בוטלה'?' selected':''}>בוטלה</option>
+      </select>
+    </div>`).join('');
+}
+function openChat(phone){
+  cvPhone=phone;
+  const c=chats.find(x=>x.phone===phone);
+  if(c)updateCV(c);
+  document.getElementById('chat-view').classList.add('open');
+}
+function updateCV(c){
+  document.getElementById('cv-phone').textContent=fmt(c.phone);
+  document.getElementById('cv-sub').textContent=(c.history||[]).length+' הודעות';
+  document.getElementById('cv-tgl').checked=!!c.bot_active;
+  const badge=document.getElementById('cv-badge');
+  const active=c.bot_active&&globalOn;
+  badge.className='badge'+(active?' on':'');
+  badge.textContent=active?'🤖 פעיל':'⏸ כבוי';
+  const msgs=document.getElementById('cv-msgs');
+  const atBottom=msgs.scrollHeight-msgs.scrollTop-msgs.clientHeight<80;
+  const h=c.history||[];
+  msgs.innerHTML=h.length?h.map(m=>`
+    <div class="msg ${m.sender}">
+      ${m.type&&m.type!=='text'?(ICONS[m.type]||'')+' ':''}${esc(m.message)}
+      <div class="msg-time">${m.sender==='bot'?'🤖 ':''}${m.time}</div>
+    </div>`).join('')
+    :'<div class="empty"><div class="empty-icon">💬</div><div>אין הודעות</div></div>';
+  if(atBottom)msgs.scrollTop=msgs.scrollHeight;
+}
+function closeChat(){document.getElementById('chat-view').classList.remove('open');cvPhone=null;}
+async function cvToggle(){if(cvPhone){await api('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
+async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
+async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
+async function toggleNotify(){await api('/api/notify-toggle',{method:'POST'});await load();}
+async function syncChats(){
+  const r=await api('/api/sync-chats',{method:'POST'});const d=await r.json();
+  alert(d.ok?'סונכרנו '+d.synced+' שיחות':'שגיאה: '+(d.error||''));
+  if(d.ok)await load();
+}
+async function enableAll(){await api('/api/enable-all',{method:'POST'});await load();}
+async function resendFor(phone){
+  const r=await api('/api/resend-last/'+phone,{method:'POST'});const d=await r.json();
+  if(!d.ok)alert('אין הודעה');else await load();
+}
+async function updateStatus(id,status){
+  await api('/api/service-calls/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+  await load();
+}
+function openModal(){document.getElementById('modal').classList.add('open');setTimeout(()=>document.getElementById('m-phone').focus(),200);}
+function closeModal(){document.getElementById('modal').classList.remove('open');document.getElementById('m-phone').value='';}
+async function addContact(){
+  const phone=document.getElementById('m-phone').value.trim();
+  if(!phone){alert('הזן מספר');return;}
+  const r=await api('/api/add-contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const d=await r.json();
+  if(d.ok){closeModal();await load();openChat(d.phone);}else alert(d.error||'שגיאה');
+}
+function fmt(p){return String(p||'').replace('@c.us','').replace(/^972/,'0');}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+load();setInterval(load,4000);
+</script>
+</body>
+</html>"""
+
 @app.route("/")
 def dashboard():
     html = DASHBOARD.replace("{{PORTAL_ACCENT}}", PORTAL_ACCENT).replace("{{PORTAL_BG}}", PORTAL_BG)
     return render_template_string(html)
+
+@app.route("/mobile")
+def mobile():
+    return render_template_string(MOBILE)
 
 @app.route("/ping")
 def ping():
