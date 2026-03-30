@@ -32,13 +32,16 @@ GREEN_API_HOST     = os.environ.get("GREEN_API_HOST", "https://api.green-api.com
 GREEN_API_URL      = f"{GREEN_API_HOST}/waInstance{GREEN_API_INSTANCE}" if GREEN_API_INSTANCE else ""
 
 # ─── ניתוב קריאות ────────────────────────────────────────────
-NOTIFY_PERSONAL_PHONE = "972527066110"          # מורן — מנהלת המשרד
-NOTIFY_GROUP_ID       = "972529532110-1614167768@g.us"
-# true = קבוצה, false = מורן אישי. ניתן לשנות מהפורטל
+NOTIFY_PERSONAL_PHONE = os.environ.get("NOTIFY_PERSONAL_PHONE", "972527066110").strip()
+NOTIFY_GROUP_ID       = os.environ.get("NOTIFY_GROUP_ID", "972529532110-1614167768@g.us").strip()
 notify_to_group = False
 
-BOSS_PHONE     = os.environ.get("BOSS_PHONE", "0502580803").strip()
-BUSINESS_NAME  = "שירות לקוחות בריכות"
+BOSS_PHONE      = os.environ.get("BOSS_PHONE", "0502580803").strip()
+BUSINESS_NAME   = os.environ.get("BUSINESS_NAME", "שירות לקוחות").strip()
+BOT_NAME        = os.environ.get("BOT_NAME", "גל").strip()
+BUSINESS_DOMAIN = os.environ.get("BUSINESS_DOMAIN", "בריכות שחייה").strip()
+PORTAL_ACCENT   = os.environ.get("PORTAL_COLOR_ACCENT", "#25d366").strip()
+PORTAL_BG       = os.environ.get("PORTAL_COLOR_BG", "#0b0d12").strip()
 KEEP_ALIVE_URL = os.environ.get("KEEP_ALIVE_URL", "").strip()
 ENABLE_KEEP_ALIVE = os.environ.get("ENABLE_KEEP_ALIVE", "false").strip().lower() in ("1", "true", "yes", "on")
 USE_POLLING    = os.environ.get("USE_POLLING", "true").strip().lower() in ("1", "true", "yes", "on")
@@ -57,6 +60,8 @@ except ValueError:
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_KEY", "")
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL   = "claude-sonnet-4-20250514"
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # ─── Firebase Firestore ───────────────────────────────────────
 FIREBASE_PROJECT_ID  = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
@@ -284,21 +289,27 @@ def build_system_prompt(phone=""):
     phone_display = phone972(phone).replace("972", "0", 1) if phone else ""
     phone_hint = f"\nמספר הוואטסאפ של הלקוח בשיחה הזו: {phone_display}" if phone_display else ""
     phone_instruction = f'   שאל: "האם להשתמש במספר {phone_display} לקריאה, או מספר אחר?" — אם אישר, השתמש בו ישירות.' if phone_display else '   בקש מהלקוח מספר טלפון ישראלי תקין (05X).'
-    return f"""אתה גל — עוזר דיגיטלי של רועי, מומחה לבריכות שחייה.{phone_hint}
+    return f"""אתה {BOT_NAME} — עוזר דיגיטלי של {BUSINESS_NAME}, מומחה ל{BUSINESS_DOMAIN}.{phone_hint}
 
 זהות:
-- שמך גל
-- אם שואלים מי אתה: "אני גל, העוזר הדיגיטלי של רועי"
-- אם שואלים על רועי — התחמק בנימוס: "רועי יצור איתך קשר בהקדם"
-- אל תחשוף פרטים על רועי, על החברה, על עצמך מעבר לנ"ל
+- שמך {BOT_NAME}
+- אם שואלים מי אתה: "אני {BOT_NAME}, העוזר הדיגיטלי של {BUSINESS_NAME}"
+- אם שואלים על הבעלים/החברה — התחמק בנימוס: "ניצור איתך קשר בהקדם"
+- אל תחשוף פרטים אישיים על הבעלים, על החברה, על עצמך מעבר לנ"ל
 
 ברכה:
 - עכשיו השעה בישראל היא {il_now().strftime('%H:%M')} — הברכה הנכונה היא "{greeting}"
 - השתמש בברכה הזו בדיוק בפתיחת שיחה חדשה
 
 תחום עיסוק:
-- בריכות שחייה בלבד: תחזוקה, תיקונים, הקמה, שיפוץ
-- אם פונים לשירות אחר (מזגנים, צבע, שיפוץ כללי וכו') — "אנחנו מתמחים בבריכות שחייה בלבד, לא נוכל לעזור בזה"
+- {BUSINESS_DOMAIN} בלבד
+- אם פונים לשירות אחר — "אנחנו מתמחים ב{BUSINESS_DOMAIN} בלבד, לא נוכל לעזור בזה"
+
+בדיקת הגיון לפני פתיחת קריאה:
+- קרא את תיאור הבקשה בעיון — האם זה הגיוני מקצועית?
+- דוגמאות לא הגיוניות: "להוסיף זעתר למסנן", "לצבוע המים", "להוסיף דגים" — אלו לא שירותי בריכות אמיתיים
+- אם הבקשה לא הגיונית — שאל בנימוס: "לא בטוח שהבנתי, תוכל להסביר?" ואל תפתח קריאה
+- אם נראה שהלקוח צוחק או בודק אותך — ענה בחיוך אבל אל תפתח קריאה: "נראה שאתה בודק אותי 😄 אשמח לעזור אם יש בעיה אמיתית"
 
 סגנון:
 - עברית יומיומית, חמה וטבעית — כמו שכן טוב שגם מקצוען
@@ -530,9 +541,47 @@ def schedule_reminder(phone, last_msg):
         reminder_timers[phone] = t
     t.start()
 
+def transcribe_audio_groq(audio_url):
+    """תמלול הקלטה קולית עם Groq Whisper — חינמי, תומך עברית"""
+    if not GROQ_API_KEY:
+        print("[Groq] חסר GROQ_API_KEY", flush=True)
+        return None
+    try:
+        r = requests.get(audio_url, timeout=15)
+        if r.status_code != 200:
+            print(f"[Groq] download failed: {r.status_code}", flush=True)
+            return None
+        # שלח ל-Groq Whisper
+        resp = requests.post(
+            GROQ_WHISPER_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            files={"file": ("audio.ogg", r.content, "audio/ogg")},
+            data={"model": "whisper-large-v3", "language": "he", "response_format": "text"},
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.text.strip()
+            print(f"[Groq] transcribed: {text[:60]}", flush=True)
+            return text
+        print(f"[Groq] error: {resp.status_code} {resp.text[:100]}", flush=True)
+        return None
+    except Exception as e:
+        print(f"[Groq] exception: {e}", flush=True)
+        return None
+
 def handle_message(phone, body, msg_type="text", audio_url=None):
     is_boss = is_boss_phone(phone)
     print(f"[Handle] phone={phone} phone972={phone972(phone)} is_boss={is_boss}", flush=True)
+
+    # תמלול הקלטה — לכולם (לקוחות ורועי)
+    if msg_type == "audio" and audio_url:
+        transcribed = transcribe_audio_groq(audio_url)
+        if transcribed:
+            body = transcribed
+            msg_type = "text"
+            add_to_history(phone, "client", f"🎤 {transcribed}", "audio")
+        else:
+            body = "[שלח הקלטה קולית — לא הצלחתי לתמלל]"
 
     with state_lock:
         cancel_reminder(phone)
@@ -642,7 +691,9 @@ def process_green_event(body, receipt_id=None):
                 bot_enabled[phone] = is_boss  # הבוס תמיד פעיל, שאר - כבוי
             sessions.setdefault(phone, {"step": "active", "data": {}})
 
-        add_to_history(phone, "client", body_text, msg_type)
+        # הקלטה — לא נוסיף להיסטוריה כאן, handle_message יוסיף אחרי תמלול
+        if msg_type != "audio":
+            add_to_history(phone, "client", body_text, msg_type)
         save_data()
 
         with state_lock:
@@ -966,7 +1017,7 @@ DASHBOARD = r"""<!DOCTYPE html>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0b0d12;--s1:#13161f;--s2:#1a1e2a;--s3:#222736;--border:#252b3b;--accent:#25d366;--text:#dde1ec;--muted:#5a6378;--danger:#e74c3c;}
+:root{--bg:{{PORTAL_BG}};--s1:#13161f;--s2:#1a1e2a;--s3:#222736;--border:#252b3b;--accent:{{PORTAL_ACCENT}};--text:#dde1ec;--muted:#5a6378;--danger:#e74c3c;}
 body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
 header{background:var(--s1);border-bottom:1px solid var(--border);padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:12px}
 .logo{display:flex;align-items:center;gap:9px;font-weight:800;font-size:16px}
@@ -1184,6 +1235,11 @@ function renderCalls(){
 function renderWin(c){
   const h=c.history||[];
   const isActive=c.bot_active&&globalOn;
+  // שמור מיקום גלילה לפני רענון
+  const msgsEl=document.getElementById('msgs');
+  const prevScrollTop = msgsEl ? msgsEl.scrollTop : null;
+  const prevScrollHeight = msgsEl ? msgsEl.scrollHeight : null;
+  const prevMsgCount = msgsEl ? msgsEl.querySelectorAll('.msg').length : 0;
   document.getElementById('win').innerHTML=`
     <div class="topbar">
       <div class="tb-left">
@@ -1207,7 +1263,17 @@ function renderWin(c){
         :'<div style="text-align:center;color:var(--muted);font-size:12px;margin-top:30px">אין הודעות</div>'}
     </div>`;
   const msgs=document.getElementById('msgs');
-  if(msgs)msgs.scrollTop=msgs.scrollHeight;
+  if(!msgs) return;
+  const newMsgCount = msgs.querySelectorAll('.msg').length;
+  const hasNewMessages = newMsgCount > prevMsgCount;
+  if(prevScrollTop === null || hasNewMessages){
+    // שיחה נפתחה עכשיו או יש הודעה חדשה — גלול למטה
+    msgs.scrollTop=msgs.scrollHeight;
+  } else {
+    // המשתמש גולל — שמור מיקום
+    const distFromBottom = prevScrollHeight - prevScrollTop;
+    msgs.scrollTop = msgs.scrollHeight - distFromBottom;
+  }
 }
 
 function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
@@ -1251,7 +1317,8 @@ load();setInterval(load,4000);
 
 @app.route("/")
 def dashboard():
-    return render_template_string(DASHBOARD)
+    html = DASHBOARD.replace("{{PORTAL_ACCENT}}", PORTAL_ACCENT).replace("{{PORTAL_BG}}", PORTAL_BG)
+    return render_template_string(html)
 
 @app.route("/ping")
 def ping():
