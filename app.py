@@ -107,6 +107,7 @@ global_bot_on = True
 notify_to_group_state = False
 last_bot_msg_time = {}
 reminder_timers   = {}
+processing_phones = set()  # מספרים שנמצאים בעיבוד כרגע
 
 # ─── Firestore שמירה/טעינה ────────────────────────────────────
 def save_data():
@@ -312,15 +313,13 @@ def build_system_prompt(phone=""):
 - אם נראה שהלקוח צוחק — החזר {{"action":"cancelled","message":"נראה שאתה בודק אותי 😄 אם תצטרך עזרה אמיתית עם הבריכה — אני כאן!"}}
 
 סגנון:
-- עברית יומיומית, חמה וטבעית — כמו שכן טוב שהוא גם מקצוען
-- אנושי ונגיש, לא רובוטי ולא פורמלי מדי
-- מינימום אמוג'י — רק כשממש מתאים, לא יותר מאחד להודעה
-- הודעות קצרות וברורות — לא יותר מ-3 שורות
-- זהה מין לקוח מהשם ופנה בהתאם (את/אתה, צריכה/צריך)
-- אם הלקוח מתאר בעיה — הגב תחילה בהבנה קצרה ("זה לא נעים..." / "בטח נטפל בזה") לפני שממשיכים
-- לעולם אל תציין שם של עובד שיגיע — תגיד "נגיע לטפל" / "הצוות שלנו ייצור איתך קשר" — ללא שמות
-- אם הלקוח שואל שאלה כללית על בריכות — ענה בחביבות, לא רק "פתח קריאה"
-- סיים שיחות בחיוב — "נשמח לעזור!", "נהיה בקשר!" וכד'
+- עברית קצרה וחמה — כמו שכן טוב שהוא מקצוען
+- הודעה אחת קצרה — שורה עד שתיים בלבד, לא יותר
+- מינימום אמוג'י — אחד לכל היותר
+- זהה מין מהשם (את/אתה)
+- אמפתיה קצרה לפני המשך ("לא נעים, נטפל")
+- אל תציין שמות עובדים
+- נסה לאסוף את כל הפרטים בשאלה אחת: "מה שמך, כתובת הבריכה ומה הבעיה?"
 
 הודעת פתיחה לשיחה חדשה:
 "{greeting}! איך אפשר לעזור?"
@@ -492,7 +491,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 400 if is_boss else 500,
+                    "max_tokens": 350 if is_boss else 450,
                     "system": system,
                     "messages": messages
                 },
@@ -725,10 +724,20 @@ def process_green_event(body, receipt_id=None):
             return
 
         if allow_reply:
-            reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
-            add_to_history(phone, "bot", reply)
-            send_message(phone, reply)
-            save_data()
+            # מניעת עיבוד מקביל לאותו מספר
+            with state_lock:
+                if phone in processing_phones:
+                    print(f"[Skip] {phone} כבר בעיבוד, מדלג", flush=True)
+                    return
+                processing_phones.add(phone)
+            try:
+                reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
+                add_to_history(phone, "bot", reply)
+                send_message(phone, reply)
+                save_data()
+            finally:
+                with state_lock:
+                    processing_phones.discard(phone)
 
     elif webhook_type == "incomingCall":
         phone = sender.get("chatId", "").replace("@c.us", "")
@@ -995,6 +1004,20 @@ def api_add_contact():
         sessions.setdefault(phone, {"step": "active", "data": {}})
     save_data()
     return jsonify({"ok": True, "phone": phone})
+
+@app.route("/api/send-greeting/<path:phone>", methods=["POST"])
+def api_send_greeting(phone):
+    """שלח הודעת פתיחה מחדש — גם אם כבר נשלחה בעבר"""
+    greet = f"{get_greeting()}! איך אפשר לעזור?"
+    sent = send_message(phone, greet)
+    if sent:
+        with state_lock:
+            greeting_sent[phone] = True
+            bot_enabled[phone] = True
+            sessions[phone] = {"step": "active", "data": {}}
+        add_to_history(phone, "bot", greet)
+        save_data()
+    return jsonify({"ok": sent})
 
 @app.route("/api/resend-last/<path:phone>", methods=["POST"])
 def api_resend_last(phone):
@@ -1276,7 +1299,7 @@ function renderWin(c){
         <button class="btn-sm btn-resend" onclick="resendLast('${c.phone}')">🔄 שלח שוב</button>
         ${c.bot_active
           ?`<button class="btn-sm btn-deact" onclick="tog('${c.phone}')">⏸ כבה</button>`
-          :`<button class="btn-sm btn-act" onclick="tog('${c.phone}')">▶ ${c.greeting_sent?'הפעל':'שלח פתיחה'}</button>`}
+          :`<div style="display:flex;gap:5px"><button class="btn-sm btn-act" onclick="tog('${c.phone}')">▶ הפעל</button><button class="btn-sm btn-resend" onclick="sendGreeting('${c.phone}')" title="שלח הודעת פתיחה">👋</button></div>`}
       </div>
     </div>
     <div class="messages" id="msgs">
@@ -1317,6 +1340,12 @@ async function resendLast(phone){
   const r=await api('/api/resend-last/'+phone,{method:'POST'});
   const d=await r.json();
   if(!d.ok)alert('אין הודעה לשליחה חוזרת');
+  else await load();
+}
+async function sendGreeting(phone){
+  const r=await api('/api/send-greeting/'+phone,{method:'POST'});
+  const d=await r.json();
+  if(!d.ok)alert('שגיאה בשליחה');
   else await load();
 }
 async function updateStatus(id,status){
@@ -1665,4 +1694,3 @@ if ENABLE_KEEP_ALIVE and KEEP_ALIVE_URL:
 
 if __name__ == "__main__":
     app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=FLASK_PORT)
-    
