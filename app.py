@@ -1338,11 +1338,11 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     </div>
     <div class="setting-group">
       <label class="setting-label">📋 Headers ל-Webhook (שורה לכל header)</label>
-      <textarea class="setting-textarea" id="s-webhook-headers" placeholder="Authorization: Bearer TOKEN&#10;X-Api-Key: YOUR_KEY"></textarea>
+      <textarea class="setting-textarea" id="s-webhook-headers" placeholder="Authorization: Bearer TOKEN"></textarea>
     </div>
     <div class="setting-group">
       <label class="setting-label">📧 כתובות מייל להתראות (שורה לכל מייל)</label>
-      <textarea class="setting-textarea" id="s-emails" placeholder="roi@example.com&#10;moran@example.com"></textarea>
+      <textarea class="setting-textarea" id="s-emails" placeholder="roi@example.com"></textarea>
       <div class="setting-hint">ידרוש הגדרת RESEND_API_KEY ב-Render</div>
     </div>
     <div class="modal-btns">
@@ -1378,7 +1378,7 @@ async function load(){
     ni.textContent='קריאות → קבוצה וואטסאפ';
   } else {
     nb.className='btn-hdr btn-notify personal';nb.textContent='📨 מורן אישי';
-    ni.textContent='קריאות → מורן +972527066110';
+    ni.textContent='קריאות → אישי';
   }
   
   document.getElementById('s1').textContent=chats.length;
