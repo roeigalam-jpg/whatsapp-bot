@@ -1511,6 +1511,44 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+async function deleteCall(id){
+  if(!confirm('למחוק קריאה זו?'))return;
+  await api('/api/service-calls/'+id,{method:'DELETE'});
+  await load();
+}
+async function clearAllCalls(){
+  if(!confirm('למחוק את כל הקריאות?'))return;
+  await api('/api/service-calls/clear',{method:'POST'});
+  await load();
+}
+async function openSettings(){
+  const r=await api('/api/settings');
+  const s=await r.json();
+  document.getElementById('s-notify-phone').value=s.notify_personal_phone||'';
+  document.getElementById('s-notify-group').value=s.notify_group_id||'';
+  document.getElementById('s-boss-phone').value=s.boss_phone||'';
+  document.getElementById('s-webhook-url').value=s.webhook_url||'';
+  document.getElementById('s-webhook-headers').value=s.webhook_headers||'';
+  document.getElementById('s-emails').value=(s.notification_emails||[]).join('
+');
+  document.getElementById('settings-modal').classList.add('open');
+}
+function closeSettings(){document.getElementById('settings-modal').classList.remove('open');}
+async function saveSettings(){
+  const emails=document.getElementById('s-emails').value.trim().split('
+').map(e=>e.trim()).filter(Boolean);
+  await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    notify_personal_phone:document.getElementById('s-notify-phone').value.trim(),
+    notify_group_id:document.getElementById('s-notify-group').value.trim(),
+    boss_phone:document.getElementById('s-boss-phone').value.trim(),
+    webhook_url:document.getElementById('s-webhook-url').value.trim(),
+    webhook_headers:document.getElementById('s-webhook-headers').value.trim(),
+    notification_emails:emails
+  })});
+  closeSettings();
+  alert('ההגדרות נשמרו');
+  await load();
+}
 load();setInterval(load,2000);
 </script>
 </body>
