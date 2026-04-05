@@ -62,6 +62,8 @@ CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL   = "claude-sonnet-4-20250514"
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM    = "onboarding@resend.dev"
 
 # ─── Firebase Firestore ───────────────────────────────────────
 FIREBASE_PROJECT_ID  = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
@@ -119,7 +121,8 @@ def save_data():
             "chat_history": chat_history,
             "greeting_sent": greeting_sent,
             "global_bot_on": global_bot_on,
-            "notify_to_group": notify_to_group_state
+            "notify_to_group": notify_to_group_state,
+            "runtime_settings": runtime_settings
         }
     # שמור מקומי תמיד
     try:
@@ -637,17 +640,26 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         notify_msg = build_notify_message(phone, result)
         with state_lock:
             go_group = notify_to_group_state
+            _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+            _notify_group = runtime_settings.get("notify_group_id", NOTIFY_GROUP_ID)
 
         if go_group:
-            print(f"[Notify] → קבוצה {NOTIFY_GROUP_ID}", flush=True)
-            ok = send_message(NOTIFY_GROUP_ID, notify_msg)
+            print(f"[Notify] → קבוצה {_notify_group}", flush=True)
+            ok = send_message(_notify_group, notify_msg)
             print(f"[Notify] קבוצה ok={ok}", flush=True)
         else:
-            print(f"[Notify] → מורן אישי {NOTIFY_PERSONAL_PHONE}", flush=True)
-            ok = send_message(NOTIFY_PERSONAL_PHONE, notify_msg)
+            print(f"[Notify] → אישי {_notify_phone}", flush=True)
+            ok = send_message(_notify_phone, notify_msg)
             print(f"[Notify] אישי ok={ok}", flush=True)
 
         save_data()
+        # Webhook + מייל בthread נפרד
+        _call_copy = service_calls[-1].copy()
+        with state_lock:
+            _emails = list(runtime_settings.get("notification_emails", []))
+        threading.Thread(target=fire_webhook, args=(_call_copy,), daemon=True).start()
+        if _emails:
+            threading.Thread(target=send_email_notification, args=(_call_copy, _emails), daemon=True).start()
 
         if is_boss:
             reset_session(phone)
@@ -1055,6 +1067,86 @@ def api_update_status(call_id):
 
 
 
+@app.route("/api/service-calls/<int:call_id>", methods=["DELETE"])
+def api_delete_call(call_id):
+    with state_lock:
+        global service_calls
+        service_calls = [c for c in service_calls if c["id"] != call_id]
+    save_data()
+    return jsonify({"ok": True})
+
+@app.route("/api/service-calls/clear", methods=["POST"])
+def api_clear_calls():
+    global service_calls
+    with state_lock:
+        service_calls = []
+    save_data()
+    return jsonify({"ok": True})
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    with state_lock:
+        return jsonify(dict(runtime_settings))
+
+@app.route("/api/settings", methods=["POST"])
+def api_save_settings():
+    global runtime_settings
+    data = request.get_json(force=True)
+    allowed = ["notify_personal_phone","notify_group_id","boss_phone","webhook_url","webhook_headers","notification_emails"]
+    with state_lock:
+        for k in allowed:
+            if k in data:
+                runtime_settings[k] = data[k]
+    save_data()
+    return jsonify({"ok": True})
+
+def send_email_notification(call_data, emails):
+    """שלח מייל התראה בפתיחת קריאה דרך Resend"""
+    if not RESEND_API_KEY or not emails:
+        return
+    try:
+        subject = f"קריאה חדשה — {call_data.get('name','-')} | {call_data.get('call_type','-')}"
+        body = f"""
+<div dir="rtl" style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto">
+  <h2 style="color:#25d366">🔔 קריאה חדשה נפתחה</h2>
+  <table style="width:100%;border-collapse:collapse">
+    <tr><td style="padding:8px;color:#666">👤 שם</td><td style="padding:8px"><b>{call_data.get('name','-')}</b></td></tr>
+    <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">📞 טלפון</td><td style="padding:8px">{call_data.get('contact_phone','-')}</td></tr>
+    <tr><td style="padding:8px;color:#666">📍 כתובת</td><td style="padding:8px">{call_data.get('address','-')}</td></tr>
+    <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">🔧 סוג</td><td style="padding:8px">{call_data.get('call_type','-')}</td></tr>
+    <tr><td style="padding:8px;color:#666">📝 תיאור</td><td style="padding:8px">{call_data.get('description','-')}</td></tr>
+    <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">🕐 נפתח</td><td style="padding:8px">{call_data.get('opened_at','-')}</td></tr>
+  </table>
+</div>"""
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": RESEND_FROM, "to": emails, "subject": subject, "html": body},
+            timeout=10
+        )
+        print(f"[Resend] status={r.status_code}", flush=True)
+    except Exception as e:
+        print(f"[Resend] error: {e}", flush=True)
+
+def fire_webhook(call_data):
+    """שלח webhook חיצוני בפתיחת קריאה"""
+    with state_lock:
+        url = runtime_settings.get("webhook_url","").strip()
+        headers_raw = runtime_settings.get("webhook_headers","").strip()
+    if not url:
+        return
+    try:
+        headers = {"Content-Type": "application/json"}
+        if headers_raw:
+            for line in headers_raw.split("\n"):
+                if ":" in line:
+                    k,v = line.split(":",1)
+                    headers[k.strip()] = v.strip()
+        requests.post(url, json=call_data, headers=headers, timeout=8)
+        print(f"[Webhook] fired to {url}", flush=True)
+    except Exception as e:
+        print(f"[Webhook] error: {e}", flush=True)
+
 # ─── Dashboard ────────────────────────────────────────────────
 DASHBOARD = r"""<!DOCTYPE html>
 <html dir="rtl" lang="he">
@@ -1151,6 +1243,16 @@ input:checked+.tsl:before{transform:translateX(-15px)}
 .btn-cancel{background:var(--s2);color:var(--muted);border:1px solid var(--border);border-radius:7px;padding:7px 14px;font-family:inherit;font-size:13px;cursor:pointer}
 .btn-confirm{background:var(--accent);color:#000;border:none;border-radius:7px;padding:7px 14px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer}
 .notify-info{font-size:10px;color:var(--muted);padding:4px 14px;border-bottom:1px solid var(--border)}
+.btn-danger{background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger)}
+.settings-modal{background:var(--s1);border:1px solid var(--border);border-radius:14px;padding:24px;width:460px;max-height:80vh;overflow-y:auto}
+.settings-modal h3{margin-bottom:16px;font-size:16px}
+.setting-group{margin-bottom:16px}
+.setting-label{font-size:12px;color:var(--muted);margin-bottom:5px;display:block}
+.setting-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:13px;outline:none;direction:ltr}
+.setting-input:focus{border-color:var(--accent)}
+.setting-textarea{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:12px;outline:none;direction:ltr;resize:vertical;min-height:60px}
+.setting-textarea:focus{border-color:var(--accent)}
+.setting-hint{font-size:10px;color:var(--muted);margin-top:3px}
 @media(max-width:768px){
   .calls-panel{display:none}
   .main{flex-direction:column}
@@ -1174,6 +1276,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-hdr btn-green" onclick="syncChats()">🔄 סנכרן</button>
     <button class="btn-hdr btn-green" onclick="enableAll()">⚡ לכולם</button>
     <button class="btn-hdr btn-red" onclick="disableAll()">⏸ כבה</button>
+    <button class="btn-hdr" style="background:var(--s2);color:var(--muted);border:1px solid var(--border)" onclick="openSettings()">⚙️ הגדרות</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -1182,7 +1285,10 @@ input:checked+.tsl:before{transform:translateX(-15px)}
 </header>
 <div class="main">
   <div class="calls-panel">
-    <div class="cp-head">קריאות שירות</div>
+    <div class="cp-head" style="display:flex;align-items:center;justify-content:space-between">
+      <span>קריאות שירות</span>
+      <button onclick="clearAllCalls()" style="background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);border-radius:5px;padding:3px 8px;cursor:pointer;font-size:10px">מחק הכל</button>
+    </div>
     <div class="calls-list" id="calls-list"><div class="no-items">אין קריאות</div></div>
   </div>
   <div class="chat-win" id="win">
@@ -1205,6 +1311,43 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeModal()">ביטול</button>
       <button class="btn-confirm" onclick="addContact()">הוסף לפאנל</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-bg" id="settings-modal">
+  <div class="settings-modal">
+    <h3>⚙️ הגדרות</h3>
+    <div class="setting-group">
+      <label class="setting-label">📞 מספר טלפון להתראות אישיות (מורן)</label>
+      <input class="setting-input" id="s-notify-phone" type="tel" placeholder="972527066110">
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">👥 מזהה קבוצת וואטסאפ להתראות</label>
+      <input class="setting-input" id="s-notify-group" placeholder="972529532110-1614167768@g.us">
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">🔑 מספר BOSS (מספר פרטי שלך)</label>
+      <input class="setting-input" id="s-boss-phone" type="tel" placeholder="0502580803">
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">🔗 Webhook URL לפתיחת קריאות (אופציונלי)</label>
+      <input class="setting-input" id="s-webhook-url" placeholder="https://your-system.com/api/calls">
+      <div class="setting-hint">כל קריאה חדשה תשלח POST לכתובת זו</div>
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">📋 Headers ל-Webhook (שורה לכל header)</label>
+      <textarea class="setting-textarea" id="s-webhook-headers" placeholder="Authorization: Bearer TOKEN&#10;X-Api-Key: YOUR_KEY"></textarea>
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">📧 כתובות מייל להתראות (שורה לכל מייל)</label>
+      <textarea class="setting-textarea" id="s-emails" placeholder="roi@example.com&#10;moran@example.com"></textarea>
+      <div class="setting-hint">ידרוש הגדרת RESEND_API_KEY ב-Render</div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeSettings()">ביטול</button>
+      <button class="btn-confirm" onclick="saveSettings()">שמור</button>
     </div>
   </div>
 </div>
@@ -1271,12 +1414,15 @@ function renderCalls(){
       <div class="call-row">📞 <span>${esc(c.contact_phone)}</span></div>
       <div class="call-row">📍 <span>${esc(c.address)}</span></div>
       <div class="call-row">📝 <span>${esc(c.description)}</span></div>
-      <select class="status-sel" onchange="updateStatus(${c.id},this.value)">
-        <option${c.status==='ממתינה לטיפול'?' selected':''}>ממתינה לטיפול</option>
-        <option${c.status==='בטיפול'?' selected':''}>בטיפול</option>
-        <option${c.status==='הושלמה'?' selected':''}>הושלמה</option>
-        <option${c.status==='בוטלה'?' selected':''}>בוטלה</option>
-      </select>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <select class="status-sel" style="flex:1;margin-top:0" onchange="updateStatus(${c.id},this.value)">
+          <option${c.status==='ממתינה לטיפול'?' selected':''}>ממתינה לטיפול</option>
+          <option${c.status==='בטיפול'?' selected':''}>בטיפול</option>
+          <option${c.status==='הושלמה'?' selected':''}>הושלמה</option>
+          <option${c.status==='בוטלה'?' selected':''}>בוטלה</option>
+        </select>
+        <button onclick="deleteCall(${c.id})" style="background:rgba(231,76,60,.15);color:var(--danger);border:1px solid var(--danger);border-radius:5px;padding:4px 8px;cursor:pointer;font-size:11px;white-space:nowrap">🗑 מחק</button>
+      </div>
     </div>`).join('');
 }
 
@@ -1296,6 +1442,7 @@ function renderWin(c){
       </div>
       <div class="tb-right">
         <span class="badge${isActive?' on':''}">${isActive?'🤖 פעיל':'⏸ כבוי'}</span>
+        <a class="btn-sm btn-resend" href="https://wa.me/${c.phone.replace(/^972/,'972')}" target="_blank" title="פתח וואטסאפ">💬 הצטרף</a>
         <button class="btn-sm btn-resend" onclick="resendLast('${c.phone}')">🔄 שלח שוב</button>
         ${c.bot_active
           ?`<button class="btn-sm btn-deact" onclick="tog('${c.phone}')">⏸ כבה</button>`
