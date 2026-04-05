@@ -354,16 +354,23 @@ def build_system_prompt(phone=""):
 אל תציין מספר קריאה בשיחה."""
 
 BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי החכם של רועי.
-רועי הוא הבוס שלך. עזור לו בכל דבר ללא הגבלה — עסקי, אישי, טכני, יצירתי, מזג אוויר, תרגומים, ניסוחים, שאלות כלליות, הכל.
-אל תגביל את עצמך לנושא הבריכות — רועי צריך עוזר אישי אמיתי לכל דבר.
-ישיר, קצר, יעיל. עברית טבעית. אין צורך בפתיחות מיותרות.
+רועי הוא הבוס. עזור לו בכל דבר — עסקי, אישי, טכני, יצירתי, כל נושא.
+ישיר, קצר, יעיל. עברית טבעית.
 
-כשרועי מבקש לפתוח קריאת שירות:
-{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}
-כשרועי מבקש לשלוח הודעה למישהו:
+חוקים חשובים:
+- כל הודעה היא עצמאית — אל תניח שרועי ממשיך פעולה קודמת
+- "היי", "תודה", "בסדר" — אלו שיחה רגילה, לא פתיחת קריאה ולא שליחת הודעה
+- פתח קריאה רק אם רועי מבקש זאת במפורש ("פתח קריאה", "תרשום קריאה" וכד')
+- שלח הודעה רק אם רועי מבקש זאת במפורש ("שלח ל...", "כתוב ל..." וכד')
+
+כשרועי מבקש לפתוח קריאה — פתח גם עם פרטים חלקיים, השלם חסרים ב"-":
+{"action":"open_call","name":"...","address":"-","call_type":"...","description":"...","contact_phone":"-"}
+
+כשרועי מבקש לשלוח הודעה:
 {"action":"send_message","phone":"...","message":"..."}
-בכל שאלה או בקשה אחרת:
-{"action":"continue","message":"תשובה לרועי"}"""
+
+בכל שאלה או שיחה רגילה:
+{"action":"continue","message":"תשובה קצרה לרועי"}"""
 
 def parse_green_msg(msg_data):
     msg_type_raw = (msg_data or {}).get("typeMessage", "textMessage")
@@ -485,7 +492,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 1000 if is_boss else 600,
+                    "max_tokens": 400 if is_boss else 500,
                     "system": system,
                     "messages": messages
                 },
@@ -602,14 +609,14 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
     action = result.get("action", "continue")
 
     if action == "open_call":
-        # וולידציות
-        addr_ok, addr_err = validate_address_basic(result.get("address", ""))
-        if not addr_ok:
-            return f"הכתובת לא נראית תקינה ({addr_err}). נסה שוב."
-        
-        contact_phone = result.get("contact_phone", "")
-        if not validate_il_phone(contact_phone):
-            return "מספר הטלפון לא תקין. נא לספק מספר ישראלי (05X)."
+        # וולידציות — רק ללקוחות, לא לבוס
+        contact_phone = result.get("contact_phone", "-")
+        if not is_boss:
+            addr_ok, addr_err = validate_address_basic(result.get("address", ""))
+            if not addr_ok:
+                return f"הכתובת לא נראית תקינה ({addr_err}). נסה שוב."
+            if not validate_il_phone(contact_phone):
+                return "מספר הטלפון לא תקין. נא לספק מספר ישראלי (05X)."
 
         with state_lock:
             cancel_reminder(phone)
@@ -644,6 +651,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         save_data()
 
         if is_boss:
+            reset_session(phone)
             return "הקריאה נפתחה ונשלח עדכון."
         return (
             f"הקריאה נפתחה בהצלחה.\n"
@@ -657,6 +665,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         if target and msg_to_send:
             target = phone972(target)
             sent = send_message(target, msg_to_send)
+            reset_session(phone)
             return f"נשלח ל-{target}" if sent else "שגיאה בשליחה"
         return "חסרים פרטים"
 
@@ -1326,7 +1335,7 @@ async function addContact(){
 }
 function fmt(p){return String(p).replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();setInterval(load,4000);
+load();setInterval(load,2000);
 </script>
 </body>
 </html>"""
@@ -1599,7 +1608,7 @@ async function addContact(){
 }
 function fmt(p){return String(p||'').replace('@c.us','').replace(/^972/,'0');}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-load();setInterval(load,4000);
+load();setInterval(load,2000);
 </script>
 </body>
 </html>"""
