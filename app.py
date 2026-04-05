@@ -263,21 +263,17 @@ def extract_message_id(payload):
     return None
 
 def is_duplicate_green_event(body, receipt_id):
+    # סומכים רק על message ID — כך webhook + polling לא מעבדים את אותה הודעה פעמיים
     mid = extract_message_id(body)
-    keys = []
-    if mid:
-        keys.append(f"m:{mid}")
-    if receipt_id is not None:
-        keys.append(f"r:{receipt_id}")
-    if not keys:
+    if not mid:
         return False
+    key = f"m:{mid}"
     now = time.monotonic()
     with _seen_lock:
-        for k in keys:
-            if k in _seen_event_keys:
-                return True
-        for k in keys:
-            _seen_event_keys[k] = now
+        if key in _seen_event_keys:
+            print(f"[Dedup] duplicate message blocked: {key}", flush=True)
+            return True
+        _seen_event_keys[key] = now
         if len(_seen_event_keys) > MAX_SEEN_KEYS:
             for k, _ in sorted(_seen_event_keys.items(), key=lambda x: x[1])[:3000]:
                 del _seen_event_keys[k]
@@ -289,13 +285,14 @@ def build_system_prompt(phone=""):
     phone_display = phone972(phone).replace("972", "0", 1) if phone else ""
     phone_hint = f"\nמספר הוואטסאפ של הלקוח בשיחה הזו: {phone_display}" if phone_display else ""
     phone_instruction = f'   שאל: "האם להשתמש במספר {phone_display} לקריאה, או מספר אחר?" — אם אישר, השתמש בו ישירות.' if phone_display else '   בקש מהלקוח מספר טלפון ישראלי תקין (05X).'
-    return f"""אתה {BOT_NAME} — עוזר דיגיטלי של {BUSINESS_NAME}, מומחה לבריכות שחייה.{phone_hint}
+    return f"""אתה {BOT_NAME} — העוזר הדיגיטלי של רועי, מומחה לבריכות שחייה.{phone_hint}
 
 זהות:
 - שמך {BOT_NAME}
-- אם שואלים מי אתה: "אני {BOT_NAME}, העוזר הדיגיטלי של {BUSINESS_NAME}"
-- אם שואלים על הבעלים או החברה — התחמק בנימוס: "ניצור איתך קשר בהקדם"
-- אל תחשוף פרטים אישיים על הבעלים, על החברה, או על עצמך מעבר לנ"ל
+- אם שואלים מי אתה: "אני {BOT_NAME}, העוזר של רועי"
+- אל תציין שם חברה בכלל
+- אם שואלים על רועי או על החברה — התחמק בנימוס: "רועי ייצור איתך קשר בהקדם"
+- אל תחשוף פרטים אישיים על רועי, על החברה, או על עצמך מעבר לנ"ל
 
 ברכה:
 - עכשיו השעה בישראל היא {il_now().strftime('%H:%M')} — הברכה הנכונה היא "{greeting}"
