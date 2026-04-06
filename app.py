@@ -667,9 +667,12 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         _call_copy = service_calls[-1].copy()
         with state_lock:
             _emails = list(runtime_settings.get("notification_emails", []))
+        print(f"[Email] emails list: {_emails}", flush=True)
         threading.Thread(target=fire_webhook, args=(_call_copy,), daemon=True).start()
         if _emails:
             threading.Thread(target=send_email_notification, args=(_call_copy, _emails), daemon=True).start()
+        else:
+            print("[Email] no emails configured, skipping", flush=True)
 
         if is_boss:
             reset_session(phone)
