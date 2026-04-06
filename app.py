@@ -107,6 +107,14 @@ chat_history  = {}
 greeting_sent = {}
 global_bot_on = True
 notify_to_group_state = False
+runtime_settings = {
+    "notify_personal_phone": "972527066110",
+    "notify_group_id": "972529532110-1614167768@g.us",
+    "boss_phone": "0502580803",
+    "webhook_url": "",
+    "webhook_headers": "",
+    "notification_emails": []
+}
 last_bot_msg_time = {}
 reminder_timers   = {}
 processing_phones = set()  # מספרים שנמצאים בעיבוד כרגע
@@ -172,6 +180,8 @@ def load_data():
             greeting_sent      = loaded.get("greeting_sent", {})
             global_bot_on      = loaded.get("global_bot_on", True)
             notify_to_group_state = loaded.get("notify_to_group", False)
+            if loaded.get("runtime_settings"):
+                runtime_settings.update(loaded["runtime_settings"])
 
 load_data()
 
