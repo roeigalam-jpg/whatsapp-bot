@@ -722,10 +722,28 @@ def process_green_event(body, receipt_id=None):
             return
         msg_type, body_text = parse_green_msg(msg_data)
         # שיחת וואטסאפ נכנסת — הוסף לרשימה גם ללא טקסט
-        if msg_type == "text" and not body_text and msg_data.get("typeMessage") == "callMessage":
-            body_text = "[התקשר בשיחת וואטסאפ]"
+        # מילוי טקסט ברירת מחדל לסוגי הודעות ללא טקסט
         if not body_text:
-            return
+            type_msg = msg_data.get("typeMessage", "")
+            if type_msg == "callMessage":
+                body_text = "[התקשר בשיחת וואטסאפ]"
+            elif type_msg == "audioMessage":
+                body_text = "[שלח הקלטה קולית]"
+                msg_type = "audio"
+            elif type_msg == "imageMessage":
+                body_text = "[שלח תמונה]"
+                msg_type = "image"
+            elif type_msg == "videoMessage":
+                body_text = "[שלח וידאו]"
+                msg_type = "video"
+            elif type_msg == "documentMessage":
+                body_text = "[שלח מסמך]"
+                msg_type = "document"
+            elif type_msg == "stickerMessage":
+                body_text = "[שלח סטיקר]"
+                msg_type = "sticker"
+            else:
+                return  # סוג לא מוכר — מדלג
 
         is_boss = is_boss_phone(phone)
         audio_url = extract_audio_url(msg_data) if msg_type == "audio" else None
