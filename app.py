@@ -1452,11 +1452,12 @@ function renderWin(c){
       </div>
       <div class="tb-right">
         <span class="badge${isActive?' on':''}">${isActive?'🤖 פעיל':'⏸ כבוי'}</span>
-        <a class="btn-sm btn-resend" href="https://wa.me/${c.phone.replace(/^972/,'972')}" target="_blank" title="פתח וואטסאפ">💬 הצטרף</a>
-        <button class="btn-sm btn-resend" onclick="resendLast('${c.phone}')">🔄 שלח שוב</button>
+        <button class="btn-sm btn-resend" onclick="sendGreeting('${c.phone}')" title="שלח הודעת פתיחה">👋</button>
+        <a class="btn-sm btn-resend" href="https://wa.me/${c.phone.replace(/^972/,'972')}" target="_blank" title="הצטרף לשיחה">💬</a>
+        <button class="btn-sm btn-resend" onclick="resendLast('${c.phone}')" title="שלח שוב">🔄</button>
         ${c.bot_active
           ?`<button class="btn-sm btn-deact" onclick="tog('${c.phone}')">⏸ כבה</button>`
-          :`<div style="display:flex;gap:5px"><button class="btn-sm btn-act" onclick="tog('${c.phone}')">▶ הפעל</button><button class="btn-sm btn-resend" onclick="sendGreeting('${c.phone}')" title="שלח הודעת פתיחה">👋</button></div>`}
+          :`<button class="btn-sm btn-act" onclick="tog('${c.phone}')">▶ הפעל</button>`}
       </div>
     </div>
     <div class="messages" id="msgs">
