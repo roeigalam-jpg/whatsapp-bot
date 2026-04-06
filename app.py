@@ -1529,14 +1529,12 @@ async function openSettings(){
   document.getElementById('s-boss-phone').value=s.boss_phone||'';
   document.getElementById('s-webhook-url').value=s.webhook_url||'';
   document.getElementById('s-webhook-headers').value=s.webhook_headers||'';
-  document.getElementById('s-emails').value=(s.notification_emails||[]).join('
-');
+  document.getElementById('s-emails').value=(s.notification_emails||[]).join(String.fromCharCode(10));
   document.getElementById('settings-modal').classList.add('open');
 }
 function closeSettings(){document.getElementById('settings-modal').classList.remove('open');}
 async function saveSettings(){
-  const emails=document.getElementById('s-emails').value.trim().split('
-').map(e=>e.trim()).filter(Boolean);
+  const emails=document.getElementById('s-emails').value.trim().split(String.fromCharCode(10)).map(e=>e.trim()).filter(Boolean);
   await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     notify_personal_phone:document.getElementById('s-notify-phone').value.trim(),
     notify_group_id:document.getElementById('s-notify-group').value.trim(),
