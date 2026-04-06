@@ -609,7 +609,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         if transcribed:
             body = transcribed
             msg_type = "text"
-            add_to_history(phone, "client", f"🎤 {transcribed}", "audio")
+            # עדכן את ההיסטוריה הקיימת עם התמלול (הוספנו [שלח הקלטה קולית] קודם)
+            with state_lock:
+                hist = chat_history.get(phone, [])
+                if hist and hist[-1].get("type") == "audio" and hist[-1].get("sender") == "client":
+                    hist[-1]["message"] = f"🎤 {transcribed}"
         else:
             body = "[שלח הקלטה קולית — לא הצלחתי לתמלל]"
 
@@ -757,9 +761,8 @@ def process_green_event(body, receipt_id=None):
                 bot_enabled[phone] = is_boss  # הבוס תמיד פעיל, שאר - כבוי
             sessions.setdefault(phone, {"step": "active", "data": {}})
 
-        # הקלטה — לא נוסיף להיסטוריה כאן, handle_message יוסיף אחרי תמלול
-        if msg_type != "audio":
-            add_to_history(phone, "client", body_text, msg_type)
+        # תמיד נוסיף להיסטוריה — גם הקלטות
+        add_to_history(phone, "client", body_text, msg_type)
         save_data()
 
         with state_lock:
