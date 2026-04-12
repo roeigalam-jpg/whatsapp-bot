@@ -384,6 +384,7 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 - אם לא ברור — שאל "מה הפרטים?" לפני שפותח
 - שלח הודעה רק אם רועי מבקש במפורש עם מספר ותוכן
 - אם אינך בטוח — ענה {"action":"continue","message":"..."} ואל תפתח קריאה
+- אם בהיסטוריה יש "[קריאה נפתחה — שיחה חדשה]" — זו שיחה חדשה, אל תפתח קריאה נוספת על בסיס מה שהיה לפני
 
 כשרועי מבקש לפתוח קריאה עם פרטים:
 {"action":"open_call","name":"...","address":"-","call_type":"...","description":"...","contact_phone":"-"}
@@ -709,8 +710,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
 
         if is_boss:
             reset_session(phone)
-            return "הקריאה נפתחה בהצלחה ✓"
-        return "הקריאה נפתחה בהצלחה! נציג יצור איתך קשר בהקדם. תודה שפנית 🙏"
+            # הוסף הודעת מערכת שמונעת פתיחה כפולה
+            add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
+            return "✅ הקריאה נפתחה"
+        return "✅ הפנייה התקבלה בהצלחה!\nנציג יצור איתך קשר בהקדם 🙂\nלכל שאלה נוספת — אנחנו כאן."
 
     if action == "send_message" and is_boss:
         target = result.get("phone", "")
@@ -1185,7 +1188,14 @@ def api_delete_call(call_id):
     with state_lock:
         global service_calls
         service_calls = [c for c in service_calls if c["id"] != call_id]
+    # שמירה סינכרונית — מחיקה חייבת להישמר מיד
     save_data()
+    _save_firestore({
+        "sessions": sessions, "service_calls": service_calls,
+        "bot_enabled": bot_enabled, "chat_history": chat_history,
+        "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
+        "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
+    })
     return jsonify({"ok": True})
 
 @app.route("/api/service-calls/clear", methods=["POST"])
@@ -1194,6 +1204,12 @@ def api_clear_calls():
     with state_lock:
         service_calls = []
     save_data()
+    _save_firestore({
+        "sessions": sessions, "service_calls": [],
+        "bot_enabled": bot_enabled, "chat_history": chat_history,
+        "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
+        "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
+    })
     return jsonify({"ok": True})
 
 @app.route("/api/settings", methods=["GET"])
@@ -1470,10 +1486,15 @@ let chats=[], calls=[], sel=null, globalOn=true, notifyGroup=false;
 const TYPE_ICONS={"image":"📷","audio":"🎤","video":"🎬","document":"📄","sticker":"😀","text":""};
 function api(u,o){return fetch(u,Object.assign({},o||{},{credentials:'include'}));}
 
+const historyCache={};
 async function load(){
   const q=document.getElementById('search').value;
   const r=await api('/api/status'+(q?'?q='+encodeURIComponent(q):''));
   const d=await r.json();
+  // שמור history מה-cache הקיים
+  d.chats.forEach(c=>{
+    if(historyCache[c.phone]) c.history=historyCache[c.phone];
+  });
   chats=d.chats; calls=d.calls; globalOn=d.global_bot_on; notifyGroup=d.notify_to_group;
   {const gs=d;
   
@@ -1501,7 +1522,7 @@ async function load(){
       // רענן היסטוריה אם יש הודעות חדשות
       const prevCount=c.history?c.history.length:0;
       if(c.msg_count>prevCount){
-        api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{c.history=h;renderWin(c);});
+        api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{c.history=h;historyCache[sel]=h;renderWin(c);});
       } else {
         renderWin(c);
       }
@@ -1601,6 +1622,7 @@ async function pick(phone){
     if(!c.history){
       const r=await api('/api/chat-history/'+phone);
       c.history=await r.json();
+      historyCache[phone]=c.history;
     }
     renderWin(c);
   }
