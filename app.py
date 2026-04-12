@@ -64,6 +64,8 @@ GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 RESEND_FROM    = "onboarding@resend.dev"
+WIZENET_API_TOKEN = os.environ.get("WIZENET_API_TOKEN", "").strip()
+WIZENET_URL       = os.environ.get("WIZENET_URL", "").strip()
 
 # ─── Firebase Firestore ───────────────────────────────────────
 FIREBASE_PROJECT_ID  = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
@@ -466,6 +468,7 @@ def is_group(phone):
 def build_notify_message(phone, data):
     client_num = str(phone).replace("@c.us", "").replace("972", "0", 1)
     now_str = il_now().strftime("%d/%m/%Y %H:%M")
+    wizenet_line = f"🗂 *קריאה בוויזנט:* #{data.get('wizenet_id')}" if data.get('wizenet_id') else "⚡ נא לפתוח קריאה במערכת."
     return "\n".join([
         "🔔 *קריאה חדשה*",
         "━━━━━━━━━━━━━━━━━━━━━━",
@@ -478,7 +481,7 @@ def build_notify_message(phone, data):
         f"📱 *מספר לקוח:* {client_num}",
         f"🕐 *נפתח:* {now_str}",
         "",
-        "⚡ נא לפתוח קריאה במערכת."
+        wizenet_line
     ])
 
 def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
@@ -697,8 +700,16 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             print(f"[Notify] אישי ok={ok}", flush=True)
 
         save_data()
-        # Webhook + מייל בthread נפרד
+        # Wizenet — פתיחת קריאה במערכת (סינכרוני כדי לקבל מספר קריאה)
         _call_copy = service_calls[-1].copy()
+        wizenet_call_id = open_wizenet_call(_call_copy)
+        if wizenet_call_id:
+            with state_lock:
+                service_calls[-1]["wizenet_id"] = wizenet_call_id
+            _call_copy["wizenet_id"] = wizenet_call_id
+            save_data()
+
+        # Webhook + מייל בthread נפרד
         with state_lock:
             _emails = list(runtime_settings.get("notification_emails", []))
         print(f"[Email] emails list: {_emails}", flush=True)
@@ -1256,6 +1267,42 @@ def send_email_notification(call_data, emails):
         print(f"[Resend] status={r.status_code}", flush=True)
     except Exception as e:
         print(f"[Resend] error: {e}", flush=True)
+
+def open_wizenet_call(call_data):
+    """פתיחת קריאה ב-Wizenet"""
+    if not WIZENET_API_TOKEN or not WIZENET_URL:
+        return None
+    try:
+        payload = {
+            "callid": "-1",
+            "cid": "-1",
+            "subject": f"קריאה מוואטסאפ — {call_data.get('call_type', 'שירות')}",
+            "ccell": call_data.get("contact_phone", ""),
+            "CntctName": call_data.get("name", ""),
+            "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
+            "OriginID": "5"
+        }
+        r = requests.post(
+            WIZENET_URL,
+            headers={"Authorization": WIZENET_API_TOKEN, "Content-Type": "application/json"},
+            json=payload,
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                status = data[0].get("Status")
+                call_id = data[0].get("CALLID")
+                if status == "1":
+                    print(f"[Wizenet] קריאה נפתחה: #{call_id}", flush=True)
+                    return call_id
+                else:
+                    print(f"[Wizenet] שגיאה: {data[0].get('message')}", flush=True)
+        else:
+            print(f"[Wizenet] HTTP {r.status_code}: {r.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"[Wizenet] exception: {e}", flush=True)
+    return None
 
 def fire_webhook(call_data):
     """שלח webhook חיצוני בפתיחת קריאה"""
