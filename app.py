@@ -941,7 +941,7 @@ def api_chats():
                 "bot_active": bot_enabled.get(phone, False),
                 "greeting_sent": greeting_sent.get(phone, False),
                 "last_message": last,
-                "history": history,
+                "msg_count": len(history),
                 "step": sessions.get(phone, {}).get("step", "active"),
             })
     with state_lock:
@@ -955,6 +955,12 @@ def api_chats():
     for c in snapshot:
         del c["_sort"]
     return jsonify(snapshot)
+
+@app.route("/api/chat-history/<path:phone>")
+def api_chat_history(phone):
+    with state_lock:
+        history = list(chat_history.get(phone, []))
+    return jsonify(history)
 
 @app.route("/api/global-toggle", methods=["POST"])
 def api_global_toggle():
@@ -1440,7 +1446,18 @@ async function load(){
   document.getElementById('s1').textContent=chats.length;
   document.getElementById('s2').textContent=calls.length;
   renderList(); renderCalls();
-  if(sel){const c=chats.find(c=>c.phone===sel);if(c)renderWin(c);}
+  if(sel){
+    const c=chats.find(c=>c.phone===sel);
+    if(c){
+      // רענן היסטוריה אם יש הודעות חדשות
+      const prevCount=c.history?c.history.length:0;
+      if(c.msg_count>prevCount){
+        api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{c.history=h;renderWin(c);});
+      } else {
+        renderWin(c);
+      }
+    }
+  }
 }
 
 function renderList(){
@@ -1494,7 +1511,7 @@ function renderWin(c){
     <div class="topbar">
       <div class="tb-left">
         <div style="font-size:19px">👤</div>
-        <div><div class="tb-phone">${fmt(c.phone)}</div><div class="tb-sub">${h.length} הודעות</div></div>
+        <div><div class="tb-phone">${fmt(c.phone)}</div><div class="tb-sub">${c.msg_count||h.length} הודעות</div></div>
       </div>
       <div class="tb-right">
         <span class="badge${isActive?' on':''}">${isActive?'🤖 פעיל':'⏸ כבוי'}</span>
@@ -1528,7 +1545,18 @@ function renderWin(c){
   }
 }
 
-function pick(phone){sel=phone;const c=chats.find(c=>c.phone===phone);if(c)renderWin(c);renderList();}
+async function pick(phone){
+  sel=phone;
+  const c=chats.find(c=>c.phone===phone);
+  if(c){
+    if(!c.history){
+      const r=await api('/api/chat-history/'+phone);
+      c.history=await r.json();
+    }
+    renderWin(c);
+  }
+  renderList();
+}
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
 async function toggleNotify(){await api('/api/notify-toggle',{method:'POST'});await load();}
