@@ -606,7 +606,7 @@ def transcribe_audio_groq(audio_url):
             GROQ_WHISPER_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             files={"file": ("audio.ogg", r.content, "audio/ogg")},
-            data={"model": "whisper-large-v3-turbo", "language": "he", "response_format": "text", "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"},
+            data={"model": "whisper-large-v3", "language": "he", "response_format": "text", "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"},
             timeout=30
         )
         if resp.status_code == 200:
