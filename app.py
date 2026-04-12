@@ -371,11 +371,12 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי החכם של רו
 
 חוקים חשובים:
 - כל הודעה היא עצמאית — אל תניח שרועי ממשיך פעולה קודמת
-- "היי", "תודה", "בסדר" — אלו שיחה רגילה, לא פתיחת קריאה ולא שליחת הודעה
-- פתח קריאה רק אם רועי מבקש זאת במפורש ("פתח קריאה", "תרשום קריאה" וכד')
-- שלח הודעה רק אם רועי מבקש זאת במפורש ("שלח ל...", "כתוב ל..." וכד')
+- "היי", "תודה", "בסדר", "אני צריך X" — שיחה רגילה, לא פתיחת קריאה
+- פתח קריאה רק אם רועי נותן פרטים ממשיים: שם לקוח / כתובת / תיאור עבודה
+- "אני צריך שתפתח קריאה" ללא פרטים — שאל: "בשביל מי ומה?"
+- שלח הודעה רק אם רועי מבקש במפורש עם מספר ותוכן
 
-כשרועי מבקש לפתוח קריאה — פתח גם עם פרטים חלקיים, השלם חסרים ב"-":
+כשרועי מבקש לפתוח קריאה עם פרטים — פתח גם עם פרטים חלקיים, השלם חסרים ב"-":
 {"action":"open_call","name":"...","address":"-","call_type":"...","description":"...","contact_phone":"-"}
 
 כשרועי מבקש לשלוח הודעה:
@@ -962,6 +963,51 @@ def api_chat_history(phone):
         history = list(chat_history.get(phone, []))
     return jsonify(history)
 
+@app.route("/api/status")
+def api_status():
+    """endpoint יחיד שמחזיר הכל — מפחית בקשות מהפורטל"""
+    search = request.args.get("q", "").strip().lower()
+    with state_lock:
+        all_phones = set(list(chat_history.keys()) + list(bot_enabled.keys()))
+        snapshot = []
+        for phone in all_phones:
+            if is_group(phone + "@c.us"):
+                continue
+            history = list(chat_history.get(phone, []))
+            last = history[-1] if history else None
+            if search:
+                phone_match = search in phone.replace("972", "0", 1)
+                text_match = any(search in h["message"].lower() for h in history)
+                if not phone_match and not text_match:
+                    continue
+            snapshot.append({
+                "phone": phone,
+                "bot_active": bot_enabled.get(phone, False),
+                "greeting_sent": greeting_sent.get(phone, False),
+                "last_message": last,
+                "msg_count": len(history),
+                "step": sessions.get(phone, {}).get("step", "active"),
+            })
+        g_on = global_bot_on
+        ng = notify_to_group_state
+        calls_snap = list(service_calls)
+
+    for c in snapshot:
+        c["_sort"] = (
+            0 if (c["bot_active"] and g_on) else 1,
+            -_last_msg_ts_key(c["last_message"]),
+        )
+    snapshot.sort(key=lambda c: c["_sort"])
+    for c in snapshot:
+        del c["_sort"]
+
+    return jsonify({
+        "chats": snapshot,
+        "calls": calls_snap,
+        "global_bot_on": g_on,
+        "notify_to_group": ng
+    })
+
 @app.route("/api/global-toggle", methods=["POST"])
 def api_global_toggle():
     global global_bot_on
@@ -1421,13 +1467,10 @@ function api(u,o){return fetch(u,Object.assign({},o||{},{credentials:'include'})
 
 async function load(){
   const q=document.getElementById('search').value;
-  const [cr,sr,gr]=await Promise.all([
-    api('/api/chats'+(q?'?q='+encodeURIComponent(q):'')),
-    api('/api/service-calls'),
-    api('/api/global-status')
-  ]);
-  chats=await cr.json(); calls=await sr.json(); const gs=await gr.json();
-  globalOn=gs.global_bot_on; notifyGroup=gs.notify_to_group;
+  const r=await api('/api/status'+(q?'?q='+encodeURIComponent(q):''));
+  const d=await r.json();
+  chats=d.chats; calls=d.calls; globalOn=d.global_bot_on; notifyGroup=d.notify_to_group;
+  {const gs=d;
   
   const btn=document.getElementById('global-btn');
   if(globalOn){btn.className='btn-hdr btn-global on';btn.textContent='🟢 מענה פעיל';}
@@ -1445,6 +1488,7 @@ async function load(){
   
   document.getElementById('s1').textContent=chats.length;
   document.getElementById('s2').textContent=calls.length;
+  } // end gs block
   renderList(); renderCalls();
   if(sel){
     const c=chats.find(c=>c.phone===sel);
