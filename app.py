@@ -120,6 +120,16 @@ reminder_timers   = {}
 processing_phones = set()  # מספרים שנמצאים בעיבוד כרגע
 
 # ─── Firestore שמירה/טעינה ────────────────────────────────────
+def _save_firestore(payload):
+    """שמירה ל-Firestore בthread נפרד — לא חוסמת"""
+    db = _get_db()
+    if db:
+        try:
+            col, doc = FIRESTORE_DOC.split("/")
+            db.collection(col).document(doc).set(payload)
+        except Exception as e:
+            print(f"[Firestore] save error: {e}", flush=True)
+
 def save_data():
     with state_lock:
         payload = {
@@ -132,21 +142,14 @@ def save_data():
             "notify_to_group": notify_to_group_state,
             "runtime_settings": runtime_settings
         }
-    # שמור מקומי תמיד
+    # שמור מקומי תמיד — מהיר
     try:
         with open("data.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save/local] error: {e}", flush=True)
-    # שמור Firestore
-    db = _get_db()
-    if db:
-        try:
-            col, doc = FIRESTORE_DOC.split("/")
-            db.collection(col).document(doc).set(payload)
-            print("[Firestore] saved", flush=True)
-        except Exception as e:
-            print(f"[Firestore] save error: {e}", flush=True)
+    # שמור Firestore בthread נפרד — לא חוסם את הבוט
+    threading.Thread(target=_save_firestore, args=(payload,), daemon=True).start()
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group_state
@@ -605,7 +608,7 @@ def transcribe_audio_groq(audio_url):
         resp = requests.post(
             GROQ_WHISPER_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            files={"file": ("audio.ogg", r.content, "audio/ogg")},
+            files={"file": ("audio.mp3", r.content, "audio/mpeg")},
             data={"model": "whisper-large-v3", "language": "he", "response_format": "text", "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"},
             timeout=30
         )
