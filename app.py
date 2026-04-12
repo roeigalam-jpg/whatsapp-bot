@@ -700,18 +700,33 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             print(f"[Notify] אישי ok={ok}", flush=True)
 
         save_data()
-        # Wizenet — פתיחת קריאה במערכת (סינכרוני כדי לקבל מספר קריאה)
         _call_copy = service_calls[-1].copy()
-        wizenet_call_id = open_wizenet_call(_call_copy)
-        if wizenet_call_id:
-            with state_lock:
-                service_calls[-1]["wizenet_id"] = wizenet_call_id
-            _call_copy["wizenet_id"] = wizenet_call_id
-            save_data()
 
-        # Webhook + מייל בthread נפרד
+        # Wizenet + Webhook + מייל — הכל בthread נפרד, לא חוסם
         with state_lock:
             _emails = list(runtime_settings.get("notification_emails", []))
+
+        def _background_tasks(call_data, emails):
+            # Wizenet
+            wid = open_wizenet_call(call_data)
+            if wid:
+                call_data["wizenet_id"] = wid
+                with state_lock:
+                    for c in service_calls:
+                        if c["id"] == call_data["id"]:
+                            c["wizenet_id"] = wid
+                            break
+                save_data()
+            # Webhook
+            fire_webhook(call_data)
+            # מייל
+            if emails:
+                send_email_notification(call_data, emails)
+            else:
+                print("[Email] no emails configured, skipping", flush=True)
+
+        print(f"[Email] emails list: {_emails}", flush=True)
+        threading.Thread(target=_background_tasks, args=(_call_copy, _emails), daemon=True).start()
         print(f"[Email] emails list: {_emails}", flush=True)
         threading.Thread(target=fire_webhook, args=(_call_copy,), daemon=True).start()
         if _emails:
@@ -1288,6 +1303,7 @@ def open_wizenet_call(call_data):
             json=payload,
             timeout=10
         )
+        print(f"[Wizenet] status={r.status_code} response={r.text[:200]}", flush=True)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and data:
