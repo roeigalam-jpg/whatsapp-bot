@@ -533,43 +533,62 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
     return {"action": "continue", "message": "מצטער, שגיאה זמנית. נסה שוב בעוד רגע."}
 
 def cancel_reminder(phone):
+    """מבטל את כל הטיימרים הפעילים לאותו מספר"""
     with state_lock:
-        t = reminder_timers.pop(phone, None)
-    if t:
-        t.cancel()
+        timers = reminder_timers.pop(phone, [])
+        cancel_flag = reminder_timers.pop(phone + "_cancel", None)
+    # סמן ביטול — מונע תזכורת שניה גם אם הטיימר כבר התחיל
+    if cancel_flag:
+        cancel_flag.set()
+    if isinstance(timers, list):
+        for t in timers:
+            t.cancel()
+    elif timers:
+        timers.cancel()
 
 def schedule_reminder(phone, last_msg):
+    # מבטל תזכורות קודמות
+    cancel_reminder(phone)
+    cancelled = threading.Event()  # flag לביטול
+
     def remind_first():
+        if cancelled.is_set():
+            return
         with state_lock:
             on = bot_enabled.get(phone, False) and global_bot_on
-        if not on:
+        if not on or cancelled.is_set():
             return
         send_message(phone, last_msg)
         add_to_history(phone, "bot", f"[תזכורת 1] {last_msg}")
         save_data()
+
         def remind_second():
+            if cancelled.is_set():
+                return
             with state_lock:
                 on2 = bot_enabled.get(phone, False) and global_bot_on
-            if not on2:
+            if not on2 or cancelled.is_set():
                 return
             msg2 = "רק לוודא — האם תרצה להמשיך ולפתוח קריאה, או שאפשר לסגור את הפנייה?"
             send_message(phone, msg2)
             add_to_history(phone, "bot", f"[תזכורת 2] {msg2}")
             save_data()
+
         t2 = threading.Timer(60.0, remind_second)
         t2.daemon = True
         with state_lock:
-            reminder_timers[phone] = t2
+            existing = reminder_timers.get(phone, [])
+            if isinstance(existing, list):
+                existing.append(t2)
+            reminder_timers[phone] = existing if isinstance(existing, list) else [t2]
         t2.start()
 
-    t = threading.Timer(60.0, remind_first)
-    t.daemon = True
+    t1 = threading.Timer(60.0, remind_first)
+    t1.daemon = True
     with state_lock:
-        old = reminder_timers.pop(phone, None)
-        if old:
-            old.cancel()
-        reminder_timers[phone] = t
-    t.start()
+        reminder_timers[phone] = [t1]
+        reminder_timers[phone + "_cancel"] = cancelled
+    t1.start()
 
 def transcribe_audio_groq(audio_url):
     """תמלול הקלטה קולית עם Groq Whisper — חינמי, תומך עברית"""
@@ -1618,9 +1637,9 @@ body{font-family:'Heebo',sans-serif;background:var(--bg);color:var(--text);displ
 .search-input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:9px 13px;color:var(--text);font-family:inherit;font-size:15px;outline:none}
 .search-input:focus{border-color:var(--accent)}
 .search-input::placeholder{color:var(--muted)}
-.pages{flex:1;overflow:hidden;position:relative}
-.page{display:none;position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
-.page.active{display:block}
+.pages{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.page{display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;flex-direction:column}
+.page.active{display:flex}
 .add-btn-wrap{padding:10px 12px 4px}
 .btn-add-full{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:11px;font-family:inherit;font-size:14px;font-weight:600;color:var(--accent);cursor:pointer;text-align:center}
 .cards{padding:8px 12px 80px;display:flex;flex-direction:column;gap:8px}
@@ -1696,11 +1715,11 @@ input:checked+.tsl:before{transform:translateX(-17px)}
   <div class="tab active" id="tab-clients" onclick="showTab('clients')">👥 לקוחות</div>
   <div class="tab" id="tab-calls" onclick="showTab('calls')">🔧 קריאות <span id="calls-badge"></span></div>
 </div>
-<div class="search-wrap">
-  <input class="search-input" id="search" placeholder="🔍 חפש מספר..." oninput="load()" autocomplete="off">
-</div>
 <div class="pages">
   <div class="page active" id="page-clients">
+    <div class="search-wrap" style="padding:8px 12px 4px">
+      <input class="search-input" id="search" placeholder="🔍 חפש מספר..." oninput="load()" autocomplete="off">
+    </div>
     <div class="add-btn-wrap">
       <button class="btn-add-full" onclick="openModal()">+ הוסף לקוח חדש</button>
     </div>
