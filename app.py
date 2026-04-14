@@ -1297,13 +1297,23 @@ def open_wizenet_call(call_data):
             "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
             "OriginID": "5"
         }
+        # נסה JSON קודם
         r = requests.post(
             WIZENET_URL,
-            headers={"Authorization": WIZENET_API_TOKEN, "Content-Type": "application/json"},
+            headers={"Authorization": WIZENET_API_TOKEN},
             json=payload,
             timeout=10
         )
-        print(f"[Wizenet] status={r.status_code} response={r.text[:200]}", flush=True)
+        print(f"[Wizenet] status={r.status_code} response={r.text[:300]}", flush=True)
+        # אם שגיאה — נסה form data
+        if r.status_code != 200 or "<html" in r.text.lower() or "error" in r.text.lower():
+            r = requests.post(
+                WIZENET_URL,
+                headers={"Authorization": WIZENET_API_TOKEN},
+                data=payload,
+                timeout=10
+            )
+            print(f"[Wizenet] form attempt: status={r.status_code} response={r.text[:300]}", flush=True)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and data:
