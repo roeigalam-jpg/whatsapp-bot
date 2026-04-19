@@ -1293,13 +1293,14 @@ def send_email_notification(call_data, emails):
         print(f"[Resend] error: {e}", flush=True)
 
 def _wizenet_headers():
-    """בנה Authorization header — נסה ללא Bearer קודם (כפי שמוריה שלחה)"""
+    """Bearer TOKEN כפי שמוריה הנחתה"""
     token = WIZENET_API_TOKEN.strip()
-    # אם הטוקן כבר מכיל Bearer — השתמש בו כמו שהוא
     if token.lower().startswith("bearer "):
-        return {"Authorization": token, "Content-Type": "application/json"}
-    # אחרת — שלח ישירות בלי Bearer
-    return {"Authorization": token, "Content-Type": "application/json"}
+        auth = token
+    else:
+        auth = f"Bearer {token}"
+    print(f"[Wizenet] Auth: {auth[:40]}", flush=True)
+    return {"Authorization": auth, "Content-Type": "application/json"}
 
 def get_wizenet_cid(contact_phone):
     """חיפוש לקוח ב-Wizenet לפי טלפון — מחזיר CID או -1"""
