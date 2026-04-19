@@ -66,6 +66,7 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 RESEND_FROM    = "onboarding@resend.dev"
 WIZENET_API_TOKEN = os.environ.get("WIZENET_API_TOKEN", "").strip()
 WIZENET_URL       = os.environ.get("WIZENET_URL", "").strip()
+WIZENET_BASE_URL  = "https://aquapoolco.wizenet.co.il/Wizeapi"
 
 # ─── Firebase Firestore ───────────────────────────────────────
 FIREBASE_PROJECT_ID  = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
