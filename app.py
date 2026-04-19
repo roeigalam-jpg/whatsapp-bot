@@ -364,7 +364,13 @@ def build_system_prompt(phone=""):
 
 כשיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור.
 אחרי אישור — החזר JSON בדיוק:
-{{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"..."}}
+{{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"...","tech_name":""}}
+
+בחירת call_type לפי הבקשה:
+- תחזוקה / מים / תקלה / ניטור → "תחזוקה"
+- בנייה / פרויקט / אבזור / גמר → "פרויקט"  
+- שיפוץ / חידוש / שיפוץ בריכה → "שיפוץ"
+- חשמל → "חשמל"
 
 אם ביטל: {{"action":"cancelled"}}
 אחרת: {{"action":"continue","message":"הודעה"}}
@@ -383,14 +389,23 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 
 חוקים:
 - כל שאלה או בקשה כללית — ענה ישירות, אל תפתח קריאה
-- פתח קריאה רק אם רועי אומר במפורש "פתח קריאה" או "תרשום קריאה" ונותן לפחות שם לקוח או כתובת
+- פתח קריאה רק אם רועי אומר במפורש "פתח קריאה" או "תרשום קריאה" ונותן לפחות שם לקוח
 - אם לא ברור — שאל "מה הפרטים?" לפני שפותח
+- אם רועי נתן שם ותיאור אבל לא טלפון — שאל "מה מספר הטלפון של הלקוח?"
 - שלח הודעה רק אם רועי מבקש במפורש עם מספר ותוכן
 - אם אינך בטוח — ענה {"action":"continue","message":"..."} ואל תפתח קריאה
 - אם בהיסטוריה יש "[קריאה נפתחה — שיחה חדשה]" — זו שיחה חדשה, אל תפתח קריאה נוספת על בסיס מה שהיה לפני
 
-כשרועי מבקש לפתוח קריאה עם פרטים:
-{"action":"open_call","name":"...","address":"-","call_type":"...","description":"...","contact_phone":"-"}
+כשרועי מבקש לפתוח קריאה עם פרטים (חובה לכלול טלפון אמיתי של הלקוח):
+{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"05XXXXXXXX","tech_name":"שם טכנאי או ריק"}
+
+סוגי קריאה לבחור לפי ההקשר:
+- תחזוקה / מים / תקלה → call_type="תחזוקה"
+- בנייה / פרויקט / אבזור → call_type="פרויקט"
+- שיפוץ / חידוש → call_type="שיפוץ"
+- חשמל → call_type="חשמל"
+
+אם רועי ציין טכנאי — שים שמו ב-tech_name. אחרת — השאר ריק.
 
 כשרועי מבקש לשלוח הודעה:
 {"action":"send_message","phone":"...","message":"..."}
@@ -1329,6 +1344,19 @@ def get_wizenet_cid(contact_phone):
         print(f"[Wizenet/CID] exception: {e}", flush=True)
     return "-1"
 
+def _call_type_to_id(call_type):
+    """המרת סוג קריאה למספר בויזנט"""
+    ct = str(call_type).lower()
+    if any(x in ct for x in ["פרויקט", "בנייה", "אבזור", "בינוי", "גמר"]):
+        return "18"
+    if any(x in ct for x in ["תחזוקה", "מים", "ניטור", "תקלה"]):
+        return "21"
+    if any(x in ct for x in ["חשמל"]):
+        return "23"
+    if any(x in ct for x in ["שיפוץ", "חידוש"]):
+        return "20"
+    return "21"  # ברירת מחדל — תחזוקה
+
 def open_wizenet_call(call_data):
     """פתיחת קריאה ב-Wizenet"""
     if not WIZENET_API_TOKEN or not WIZENET_URL:
@@ -1336,7 +1364,9 @@ def open_wizenet_call(call_data):
     try:
         contact_phone = call_data.get("contact_phone", "")
         cid = get_wizenet_cid(contact_phone)
-        print(f"[Wizenet] פותח קריאה CID={cid} טלפון={contact_phone}", flush=True)
+        call_type_id = _call_type_to_id(call_data.get("call_type", ""))
+        tech_name = call_data.get("tech_name", "").strip()
+        print(f"[Wizenet] פותח קריאה CID={cid} טלפון={contact_phone} calltype={call_type_id} טכנאי={tech_name}", flush=True)
 
         payload = {
             "callid": "-1",
@@ -1345,8 +1375,12 @@ def open_wizenet_call(call_data):
             "ccell": contact_phone,
             "CntctName": call_data.get("name", ""),
             "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
-            "OriginID": "5"
+            "OriginID": "5",
+            "calltypeid": call_type_id,
+            "statusid": "113" if tech_name else "122",
         }
+        if tech_name:
+            payload["TechName"] = tech_name
         r = requests.post(
             WIZENET_URL,
             headers=_wizenet_headers(),
