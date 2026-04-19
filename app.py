@@ -706,7 +706,9 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         with state_lock:
             _emails = list(runtime_settings.get("notification_emails", []))
 
-        def _background_tasks(call_data, emails):
+        _client_phone = phone
+
+        def _background_tasks(call_data, emails, client_phone):
             # Wizenet
             wid = open_wizenet_call(call_data)
             if wid:
@@ -717,22 +719,16 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                             c["wizenet_id"] = wid
                             break
                 save_data()
+                # שלח הודעה ללקוח עם מספר הקריאה (לא לבוס)
+                if not is_boss_phone(client_phone):
+                    send_message(client_phone, f"קריאתך נפתחה בהצלחה — מספר קריאה: #{wid} 🙂")
             # Webhook
             fire_webhook(call_data)
             # מייל
             if emails:
                 send_email_notification(call_data, emails)
-            else:
-                print("[Email] no emails configured, skipping", flush=True)
 
-        print(f"[Email] emails list: {_emails}", flush=True)
-        threading.Thread(target=_background_tasks, args=(_call_copy, _emails), daemon=True).start()
-        print(f"[Email] emails list: {_emails}", flush=True)
-        threading.Thread(target=fire_webhook, args=(_call_copy,), daemon=True).start()
-        if _emails:
-            threading.Thread(target=send_email_notification, args=(_call_copy, _emails), daemon=True).start()
-        else:
-            print("[Email] no emails configured, skipping", flush=True)
+        threading.Thread(target=_background_tasks, args=(_call_copy, _emails, _client_phone), daemon=True).start()
 
         if is_boss:
             reset_session(phone)
@@ -1214,28 +1210,40 @@ def api_delete_call(call_id):
     with state_lock:
         global service_calls
         service_calls = [c for c in service_calls if c["id"] != call_id]
-    # שמירה סינכרונית — מחיקה חייבת להישמר מיד
-    save_data()
-    _save_firestore({
-        "sessions": sessions, "service_calls": service_calls,
-        "bot_enabled": bot_enabled, "chat_history": chat_history,
-        "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
-        "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
-    })
+        payload = {
+            "sessions": sessions, "service_calls": service_calls,
+            "bot_enabled": bot_enabled, "chat_history": chat_history,
+            "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
+            "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
+        }
+    # שמירה סינכרונית מלאה — מחיקה חייבת להישמר מיד
+    try:
+        with open("data.json", "w", encoding="utf-8") as f:
+            import json as _json
+            _json.dump(payload, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Delete] local save error: {e}", flush=True)
+    _save_firestore(payload)
     return jsonify({"ok": True})
 
 @app.route("/api/service-calls/clear", methods=["POST"])
 def api_clear_calls():
-    global service_calls
     with state_lock:
+        global service_calls
         service_calls = []
-    save_data()
-    _save_firestore({
-        "sessions": sessions, "service_calls": [],
-        "bot_enabled": bot_enabled, "chat_history": chat_history,
-        "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
-        "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
-    })
+        payload = {
+            "sessions": sessions, "service_calls": [],
+            "bot_enabled": bot_enabled, "chat_history": chat_history,
+            "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
+            "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
+        }
+    try:
+        with open("data.json", "w", encoding="utf-8") as f:
+            import json as _json
+            _json.dump(payload, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Clear] local save error: {e}", flush=True)
+    _save_firestore(payload)
     return jsonify({"ok": True})
 
 @app.route("/api/settings", methods=["GET"])
@@ -1283,49 +1291,79 @@ def send_email_notification(call_data, emails):
     except Exception as e:
         print(f"[Resend] error: {e}", flush=True)
 
+def _wizenet_headers():
+    """בנה Authorization header — נסה ללא Bearer קודם (כפי שמוריה שלחה)"""
+    token = WIZENET_API_TOKEN.strip()
+    # אם הטוקן כבר מכיל Bearer — השתמש בו כמו שהוא
+    if token.lower().startswith("bearer "):
+        return {"Authorization": token, "Content-Type": "application/json"}
+    # אחרת — שלח ישירות בלי Bearer
+    return {"Authorization": token, "Content-Type": "application/json"}
+
+def get_wizenet_cid(contact_phone):
+    """חיפוש לקוח ב-Wizenet לפי טלפון — מחזיר CID או -1"""
+    if not WIZENET_API_TOKEN:
+        return "-1"
+    phone_local = str(contact_phone).replace("-", "").replace(" ", "")
+    if phone_local.startswith("972"):
+        phone_local = "0" + phone_local[3:]
+    try:
+        r = requests.post(
+            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
+            headers=_wizenet_headers(),
+            json={"ccell": phone_local},
+            timeout=10
+        )
+        print(f"[Wizenet/CID] status={r.status_code} response={r.text[:200]}", flush=True)
+        if r.status_code == 200 and r.text.strip().startswith("["):
+            data = r.json()
+            if isinstance(data, list) and data:
+                cid = data[0].get("CID", "-1")
+                name = data[0].get("name", "")
+                print(f"[Wizenet/CID] CID={cid} name={name}", flush=True)
+                if str(cid) != "-1":
+                    return str(cid)
+    except Exception as e:
+        print(f"[Wizenet/CID] exception: {e}", flush=True)
+    return "-1"
+
 def open_wizenet_call(call_data):
     """פתיחת קריאה ב-Wizenet"""
     if not WIZENET_API_TOKEN or not WIZENET_URL:
         return None
     try:
+        contact_phone = call_data.get("contact_phone", "")
+        cid = get_wizenet_cid(contact_phone)
+        print(f"[Wizenet] פותח קריאה CID={cid} טלפון={contact_phone}", flush=True)
+
         payload = {
             "callid": "-1",
-            "cid": "-1",
+            "cid": cid,
             "subject": f"קריאה מוואטסאפ — {call_data.get('call_type', 'שירות')}",
-            "ccell": call_data.get("contact_phone", ""),
+            "ccell": contact_phone,
             "CntctName": call_data.get("name", ""),
             "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
             "OriginID": "5"
         }
-        # נסה JSON קודם
         r = requests.post(
             WIZENET_URL,
-            headers={"Authorization": WIZENET_API_TOKEN},
+            headers=_wizenet_headers(),
             json=payload,
             timeout=10
         )
         print(f"[Wizenet] status={r.status_code} response={r.text[:300]}", flush=True)
-        # אם שגיאה — נסה form data
-        if r.status_code != 200 or "<html" in r.text.lower() or "error" in r.text.lower():
-            r = requests.post(
-                WIZENET_URL,
-                headers={"Authorization": WIZENET_API_TOKEN},
-                data=payload,
-                timeout=10
-            )
-            print(f"[Wizenet] form attempt: status={r.status_code} response={r.text[:300]}", flush=True)
-        if r.status_code == 200:
+        if r.status_code == 200 and r.text.strip().startswith("["):
             data = r.json()
             if isinstance(data, list) and data:
                 status = data[0].get("Status")
                 call_id = data[0].get("CALLID")
                 if status == "1":
-                    print(f"[Wizenet] קריאה נפתחה: #{call_id}", flush=True)
+                    print(f"[Wizenet] ✅ קריאה נפתחה: #{call_id}", flush=True)
                     return call_id
                 else:
-                    print(f"[Wizenet] שגיאה: {data[0].get('message')}", flush=True)
+                    print(f"[Wizenet] ❌ שגיאה: {data[0].get('message')}", flush=True)
         else:
-            print(f"[Wizenet] HTTP {r.status_code}: {r.text[:100]}", flush=True)
+            print(f"[Wizenet] HTTP {r.status_code}: {r.text[:200]}", flush=True)
     except Exception as e:
         print(f"[Wizenet] exception: {e}", flush=True)
     return None
