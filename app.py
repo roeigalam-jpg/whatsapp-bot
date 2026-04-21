@@ -282,13 +282,27 @@ def _require_admin():
 def extract_message_id(payload):
     if not isinstance(payload, dict):
         return None
-    mid = payload.get("idMessage")
-    if mid:
-        return str(mid)
+    # נסה כל המיקומים האפשריים של message ID ב-Green API
+    for key in ("idMessage", "messageId"):
+        v = payload.get(key)
+        if v:
+            return str(v)
+    # תוך messageData
     md = payload.get("messageData") or {}
-    for k in ("idMessage", "messageId"):
-        if md.get(k):
-            return str(md[k])
+    for key in ("idMessage", "messageId"):
+        v = md.get(key)
+        if v:
+            return str(v)
+    # תוך senderData (לפעמים)
+    sd = payload.get("senderData") or {}
+    v = sd.get("idMessage")
+    if v:
+        return str(v)
+    # fallback — שלב sender + timestamp כ-unique key
+    sender = (payload.get("senderData") or {}).get("chatId", "")
+    ts = payload.get("timestamp", "")
+    if sender and ts:
+        return f"{sender}:{ts}"
     return None
 
 def is_duplicate_green_event(body, receipt_id):
@@ -1530,10 +1544,10 @@ def open_wizenet_call(call_data):
             "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
             "OriginID": "5",
             "calltypeid": call_type_id,
+            "statusid": "113",
         }
         if tech_name:
             payload["TechName"] = tech_name
-            payload["statusid"] = "113"
         r = requests.post(
             WIZENET_URL,
             headers=_wizenet_headers(),
