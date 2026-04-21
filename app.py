@@ -1012,7 +1012,7 @@ def process_green_event(body, receipt_id=None):
         if not body_text:
             return
         with state_lock:
-            bot_enabled.setdefault(phone, False)
+            # רק מוסיפים להיסטוריה — לא משנים מצב הבוט בכלל
             sessions.setdefault(phone, {"step": "active", "data": {}})
         add_to_history(phone, "bot", body_text, "text")
         save_data()
