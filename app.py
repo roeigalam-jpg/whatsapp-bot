@@ -234,6 +234,13 @@ def validate_il_phone(p):
         return False
     return clean.isdigit()
 
+def normalize_il_phone(p):
+    """נרמול מספר טלפון לפורמט 05X"""
+    clean = str(p).replace("-", "").replace(" ", "").replace("+", "")
+    if clean.startswith("972"):
+        clean = "0" + clean[3:]
+    return clean
+
 def validate_address_basic(address):
     """בדיקת היגיון בסיסי בכתובת"""
     if not address or len(address.strip()) < 5:
@@ -650,6 +657,25 @@ def transcribe_audio_groq(audio_url):
         print(f"[Groq] exception: {e}", flush=True)
         return None
 
+def do_open_wizenet(call_data, emails, client_phone):
+    """פתיחת קריאה בפועל בויזנט — ברמת module כדי לאפשר קריאה מכל מקום"""
+    wid = open_wizenet_call(call_data)
+    if wid:
+        call_data["wizenet_id"] = wid
+        with state_lock:
+            for c in service_calls:
+                if c["id"] == call_data["id"]:
+                    c["wizenet_id"] = wid
+                    break
+        save_data()
+        # שלח מספר קריאה לכולם (לקוח ובוס כאחד)
+        msg = "✅ קריאה נפתחה בויזנט — מספר קריאה: #" + str(wid)
+        send_message(client_phone, msg)
+        add_to_history(client_phone, "bot", msg)
+    fire_webhook(call_data)
+    if emails:
+        send_email_notification(call_data, emails)
+
 def handle_message(phone, body, msg_type="text", audio_url=None):
     is_boss = is_boss_phone(phone)
     print(f"[Handle] phone={phone} phone972={phone972(phone)} is_boss={is_boss}", flush=True)
@@ -693,7 +719,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 call_data = pending["call_data"]
                 call_data["cid_confirmed"] = chosen["cid"]
                 threading.Thread(
-                    target=_do_open_wizenet,
+                    target=do_open_wizenet,
                     args=(call_data, pending["emails"], pending["client_phone"]),
                     daemon=True
                 ).start()
@@ -706,7 +732,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             call_data = pending["call_data"]
             call_data["cid_confirmed"] = call_data.get("_wizenet_cid", "-1")
             threading.Thread(
-                target=_do_open_wizenet,
+                target=do_open_wizenet,
                 args=(call_data, pending["emails"], pending["client_phone"]),
                 daemon=True
             ).start()
@@ -791,8 +817,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         _client_phone = phone
 
         def _background_tasks(call_data, emails, client_phone):
-            contact_phone = call_data.get("contact_phone", "").strip()
-            client_name   = call_data.get("name", "").strip()
+            # נרמל טלפון — קבל גם +972, 972, 05X
+            contact_phone = normalize_il_phone(call_data.get("contact_phone", "").strip())
+            call_data["contact_phone"] = contact_phone
+            client_name = call_data.get("name", "").strip()
 
             # שלב 1 — חפש לפי טלפון
             client_info = None
@@ -808,55 +836,30 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי שם: {client_info['name']}", flush=True)
                 elif len(results) > 1:
-                    # כמה תוצאות — הצג רשימה ותן לבחור
-                    options = "\n".join([f"{i+1}. {r['name']}" for i, r in enumerate(results[:5])])
-                    confirm_msg = f"מצאתי כמה לקוחות בשם דומה:\n{options}\n\nמה המספר הנכון? (1-{min(len(results),5)}) או 'לא' אם אף אחד"
+                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                    confirm_msg = "מצאתי כמה לקוחות:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                     with state_lock:
                         pending_wizenet_confirm[client_phone] = {
-                            "call_data": call_data,
-                            "emails": emails,
-                            "client_phone": client_phone,
-                            "wiz_options": results[:5]
+                            "call_data": call_data, "emails": emails,
+                            "client_phone": client_phone, "wiz_options": results[:5]
                         }
                     send_message(client_phone, confirm_msg)
                     add_to_history(client_phone, "bot", confirm_msg)
                     return
 
             if client_info:
-                # נמצא לקוח יחיד — שאל אישור
                 wiz_name = client_info["name"]
                 call_data["_wizenet_cid"] = client_info["cid"]
                 with state_lock:
                     pending_wizenet_confirm[client_phone] = {
-                        "call_data": call_data,
-                        "emails": emails,
-                        "client_phone": client_phone,
-                        "wiz_name": wiz_name
+                        "call_data": call_data, "emails": emails,
+                        "client_phone": client_phone, "wiz_name": wiz_name
                     }
                 confirm_msg = "מצאתי לקוח: *" + wiz_name + "*\nזה הכרטיס הנכון? (כן / לא)"
                 send_message(client_phone, confirm_msg)
                 add_to_history(client_phone, "bot", confirm_msg)
             else:
-                # לא נמצא כלל — פתח ישירות ללא שיוך
-                _do_open_wizenet(call_data, emails, client_phone)
-
-        def _do_open_wizenet(call_data, emails, client_phone):
-            """פתיחת קריאה בפועל בויזנט"""
-            wid = open_wizenet_call(call_data)
-            if wid:
-                call_data["wizenet_id"] = wid
-                with state_lock:
-                    for c in service_calls:
-                        if c["id"] == call_data["id"]:
-                            c["wizenet_id"] = wid
-                            break
-                save_data()
-                if not is_boss_phone(client_phone):
-                    send_message(client_phone, f"קריאתך נפתחה בהצלחה — מספר קריאה: #{wid} 🙂")
-                    add_to_history(client_phone, "bot", f"קריאתך נפתחה — מספר קריאה: #{wid} 🙂")
-            fire_webhook(call_data)
-            if emails:
-                send_email_notification(call_data, emails)
+                do_open_wizenet(call_data, emails, client_phone)
 
         threading.Thread(target=_background_tasks, args=(_call_copy, _emails, _client_phone), daemon=True).start()
 
