@@ -393,7 +393,7 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 - כל שאלה או בקשה כללית — ענה ישירות, אל תפתח קריאה
 - פתח קריאה רק אם רועי אומר במפורש "פתח קריאה" או "תרשום קריאה" ונותן לפחות שם לקוח
 - אם לא ברור — שאל "מה הפרטים?" לפני שפותח
-- אם רועי נתן שם ותיאור אבל לא טלפון — שאל "מה מספר הטלפון של הלקוח?"
+- טלפון הלקוח — נסה לקבל אם אפשר, אבל אם אין — השתמש ב"-" ואל תעכב את פתיחת הקריאה
 - שלח הודעה רק אם רועי מבקש במפורש עם מספר ותוכן
 - אם אינך בטוח — ענה {"action":"continue","message":"..."} ואל תפתח קריאה
 - אם בהיסטוריה יש "[קריאה נפתחה — שיחה חדשה]" — זו שיחה חדשה, אל תפתח קריאה נוספת על בסיס מה שהיה לפני
@@ -677,13 +677,32 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         pending = pending_wizenet_confirm.get(phone)
 
     if pending:
-        answer = body.strip().lower()
-        is_yes = any(x in answer for x in ["כן", "yes", "נכון", "אישור", "אשר", "ok", "יא"])
-        is_no  = any(x in answer for x in ["לא", "no", "שגוי", "לא נכון", "טעות"])
+        answer = body.strip()
+        answer_lower = answer.lower()
+        is_yes = any(x in answer_lower for x in ["כן", "yes", "נכון", "אישור", "אשר", "ok"])
+        is_no  = any(x in answer_lower for x in ["לא", "no", "שגוי", "לא נכון", "טעות"])
+
+        # בחירה מרשימה (1-5)
+        wiz_options = pending.get("wiz_options")
+        if wiz_options and answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(wiz_options):
+                chosen = wiz_options[idx]
+                with state_lock:
+                    pending_wizenet_confirm.pop(phone, None)
+                call_data = pending["call_data"]
+                call_data["cid_confirmed"] = chosen["cid"]
+                threading.Thread(
+                    target=_do_open_wizenet,
+                    args=(call_data, pending["emails"], pending["client_phone"]),
+                    daemon=True
+                ).start()
+                return f"✅ מעולה, פותח קריאה על כרטיס *{chosen['name']}*"
+            return f"בחר מספר בין 1 ל-{len(wiz_options)}, או 'לא' אם אף אחד לא מתאים"
+
         if is_yes:
             with state_lock:
                 pending_wizenet_confirm.pop(phone, None)
-            # פתח עם CID של הלקוח שאושר
             call_data = pending["call_data"]
             call_data["cid_confirmed"] = call_data.get("_wizenet_cid", "-1")
             threading.Thread(
@@ -692,27 +711,30 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 daemon=True
             ).start()
             return "✅ מעולה, פותח את הקריאה על הכרטיס הנכון!"
+
         elif is_no:
             with state_lock:
                 pending_wizenet_confirm.pop(phone, None)
             call_data = pending["call_data"]
-            # הודע לרועי שצריך לאתר כרטיס ידנית
             with state_lock:
                 _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
             notify_manual = (
                 "⚠️ *לקוח לא זוהה בויזנט*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 *שם:* {call_data.get('name','-')}\n"
-                f"📞 *טלפון:* {call_data.get('contact_phone','-')}\n"
-                f"📝 *תיאור:* {call_data.get('description','-')}\n"
+                "👤 *שם:* " + call_data.get("name","-") + "\n"
+                "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
+                "📝 *תיאור:* " + call_data.get("description","-") + "\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
             )
             send_message(_notify_phone, notify_manual)
             return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. נציג יצור איתך קשר בהקדם לטיפול 🙂"
-        # לא הבין — שאל שוב
+
+        # לא הבין
+        if wiz_options:
+            return f"בחר מספר בין 1 ל-{len(wiz_options)}, או 'לא' אם אף אחד לא מתאים"
         wiz_name = pending.get("wiz_name", "")
-        return f"מצאתי לקוח: *{wiz_name}* — זה הכרטיס הנכון? ענה כן או לא"
+        return "מצאתי לקוח: *" + wiz_name + "* — זה הכרטיס הנכון? ענה כן או לא"
 
     result = ask_claude(history, body, msg_type, is_boss=is_boss, phone=phone)
     action = result.get("action", "continue")
@@ -769,15 +791,41 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         _client_phone = phone
 
         def _background_tasks(call_data, emails, client_phone):
-            # חפש לקוח בויזנט לפי טלפון
-            contact_phone = call_data.get("contact_phone", "")
-            client_info = get_wizenet_client(contact_phone)
+            contact_phone = call_data.get("contact_phone", "").strip()
+            client_name   = call_data.get("name", "").strip()
+
+            # שלב 1 — חפש לפי טלפון
+            client_info = None
+            if validate_il_phone(contact_phone):
+                client_info = get_wizenet_client_by_phone(contact_phone)
+                if client_info:
+                    print(f"[Wizenet] נמצא לפי טלפון: {client_info['name']}", flush=True)
+
+            # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם
+            if not client_info and client_name:
+                results = get_wizenet_client_by_name(client_name)
+                if len(results) == 1:
+                    client_info = results[0]
+                    print(f"[Wizenet] נמצא לפי שם: {client_info['name']}", flush=True)
+                elif len(results) > 1:
+                    # כמה תוצאות — הצג רשימה ותן לבחור
+                    options = "\n".join([f"{i+1}. {r['name']}" for i, r in enumerate(results[:5])])
+                    confirm_msg = f"מצאתי כמה לקוחות בשם דומה:\n{options}\n\nמה המספר הנכון? (1-{min(len(results),5)}) או 'לא' אם אף אחד"
+                    with state_lock:
+                        pending_wizenet_confirm[client_phone] = {
+                            "call_data": call_data,
+                            "emails": emails,
+                            "client_phone": client_phone,
+                            "wiz_options": results[:5]
+                        }
+                    send_message(client_phone, confirm_msg)
+                    add_to_history(client_phone, "bot", confirm_msg)
+                    return
 
             if client_info:
-                # נמצא לקוח — שאל אישור
+                # נמצא לקוח יחיד — שאל אישור
                 wiz_name = client_info["name"]
                 call_data["_wizenet_cid"] = client_info["cid"]
-                call_data["_wizenet_name"] = wiz_name
                 with state_lock:
                     pending_wizenet_confirm[client_phone] = {
                         "call_data": call_data,
@@ -785,12 +833,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         "client_phone": client_phone,
                         "wiz_name": wiz_name
                     }
-                # שלח שאלת אישור לרועי/לקוח
-                confirm_msg = "מצאתי לקוח בויזנט: *" + wiz_name + "*\nזה הכרטיס הנכון? (כן / לא)"
+                confirm_msg = "מצאתי לקוח: *" + wiz_name + "*\nזה הכרטיס הנכון? (כן / לא)"
                 send_message(client_phone, confirm_msg)
                 add_to_history(client_phone, "bot", confirm_msg)
             else:
-                # לא נמצא לקוח — פתח ישירות עם CID=-1
+                # לא נמצא כלל — פתח ישירות ללא שיוך
                 _do_open_wizenet(call_data, emails, client_phone)
 
         def _do_open_wizenet(call_data, emails, client_phone):
@@ -1384,9 +1431,9 @@ def _wizenet_headers():
     print(f"[Wizenet] Auth: {auth[:40]}", flush=True)
     return {"Authorization": auth, "Content-Type": "application/json"}
 
-def get_wizenet_client(contact_phone):
-    """חיפוש לקוח ב-Wizenet לפי טלפון — מחזיר dict עם CID ושם, או None"""
-    if not WIZENET_API_TOKEN:
+def get_wizenet_client_by_phone(contact_phone):
+    """חיפוש לקוח ב-Wizenet לפי טלפון — מחזיר dict או None"""
+    if not WIZENET_API_TOKEN or not contact_phone:
         return None
     phone_local = str(contact_phone).replace("-", "").replace(" ", "")
     if phone_local.startswith("972"):
@@ -1398,22 +1445,52 @@ def get_wizenet_client(contact_phone):
             json={"ccell": phone_local},
             timeout=10
         )
-        print(f"[Wizenet/CID] status={r.status_code} response={r.text[:200]}", flush=True)
+        print(f"[Wizenet/Phone] status={r.status_code} response={r.text[:200]}", flush=True)
         if r.status_code == 200 and r.text.strip().startswith("["):
             data = r.json()
             if isinstance(data, list) and data:
                 cid = data[0].get("CID", "-1")
                 name = data[0].get("name", "").strip()
-                print(f"[Wizenet/CID] CID={cid} name={name}", flush=True)
                 if str(cid) != "-1" and name:
+                    print(f"[Wizenet/Phone] נמצא: CID={cid} name={name}", flush=True)
                     return {"cid": str(cid), "name": name}
     except Exception as e:
-        print(f"[Wizenet/CID] exception: {e}", flush=True)
+        print(f"[Wizenet/Phone] exception: {e}", flush=True)
     return None
 
+def get_wizenet_client_by_name(client_name):
+    """חיפוש לקוח ב-Wizenet לפי שם — מחזיר רשימת תוצאות"""
+    if not WIZENET_API_TOKEN or not client_name or len(client_name.strip()) < 2:
+        return []
+    try:
+        r = requests.post(
+            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
+            headers=_wizenet_headers(),
+            json={"ccompany": client_name.strip()},
+            timeout=10
+        )
+        print(f"[Wizenet/Name] status={r.status_code} response={r.text[:300]}", flush=True)
+        if r.status_code == 200 and r.text.strip().startswith("["):
+            data = r.json()
+            results = []
+            for item in data:
+                cid = item.get("CID", "-1")
+                name = item.get("name", "").strip()
+                if str(cid) != "-1" and name:
+                    results.append({"cid": str(cid), "name": name})
+            print(f"[Wizenet/Name] נמצאו {len(results)} תוצאות", flush=True)
+            return results
+    except Exception as e:
+        print(f"[Wizenet/Name] exception: {e}", flush=True)
+    return []
+
+def get_wizenet_client(contact_phone):
+    """לתאימות לאחור"""
+    return get_wizenet_client_by_phone(contact_phone)
+
 def get_wizenet_cid(contact_phone):
-    """חיפוש לקוח — מחזיר CID בלבד (לתאימות לאחור)"""
-    client = get_wizenet_client(contact_phone)
+    """לתאימות לאחור"""
+    client = get_wizenet_client_by_phone(contact_phone)
     return client["cid"] if client else "-1"
 
 def _call_type_to_id(call_type):
@@ -1444,16 +1521,16 @@ def open_wizenet_call(call_data):
         payload = {
             "callid": "-1",
             "cid": cid,
-            "subject": f"קריאה מוואטסאפ — {call_data.get('call_type', 'שירות')}",
+            "subject": call_data.get('description', call_data.get('call_type', 'שירות'))[:80],
             "ccell": contact_phone,
             "CntctName": call_data.get("name", ""),
             "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
             "OriginID": "5",
             "calltypeid": call_type_id,
-            "statusid": "113" if tech_name else "122",
         }
         if tech_name:
             payload["TechName"] = tech_name
+            payload["statusid"] = "113"
         r = requests.post(
             WIZENET_URL,
             headers=_wizenet_headers(),
