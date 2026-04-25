@@ -306,15 +306,19 @@ def extract_message_id(payload):
     return None
 
 def is_duplicate_green_event(body, receipt_id):
-    # סומכים רק על message ID — כך webhook + polling לא מעבדים את אותה הודעה פעמיים
     mid = extract_message_id(body)
+    print(f"[Dedup] mid={mid} receipt={receipt_id} keys_in_body={list(body.keys()) if isinstance(body,dict) else []}", flush=True)
     if not mid:
-        return False
+        # אם אין ID — השתמש ב-receipt_id
+        if receipt_id:
+            mid = f"r:{receipt_id}"
+        else:
+            return False
     key = f"m:{mid}"
     now = time.monotonic()
     with _seen_lock:
         if key in _seen_event_keys:
-            print(f"[Dedup] duplicate message blocked: {key}", flush=True)
+            print(f"[Dedup] כפילות חסומה: {key}", flush=True)
             return True
         _seen_event_keys[key] = now
         if len(_seen_event_keys) > MAX_SEEN_KEYS:
@@ -362,6 +366,12 @@ def build_system_prompt(phone=""):
 - אמפתיה קצרה לפני המשך ("לא נעים, נטפל")
 - אל תציין שמות עובדים
 - נסה לאסוף את כל הפרטים בשאלה אחת: "מה שמך, כתובת הבריכה ומה הבעיה?"
+
+חוק ברזל — אל תשאל אותה שאלה פעמיים:
+- אם הלקוח כבר ענה על שאלה — אל תשאל שוב
+- אם יש לך שם, כתובת ותיאור — תמשיך לאישור
+- טלפון — אם הלקוח נתן את מספרו מהוואטסאפ ואישר, זה מספיק
+- אם הלקוח נתן את כל הפרטים בהודעה אחת — אל תשאל שוב כלום, תלך לאישור
 
 הודעת פתיחה לשיחה חדשה:
 "{greeting}! איך אפשר לעזור?"
@@ -873,7 +883,25 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 send_message(client_phone, confirm_msg)
                 add_to_history(client_phone, "bot", confirm_msg)
             else:
-                do_open_wizenet(call_data, emails, client_phone)
+                # לא נמצא לקוח — לא פותחים קריאה, מודיעים לרועי לטיפול ידני
+                with state_lock:
+                    _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                notify_msg = (
+                    "⚠️ *לקוח לא זוהה — נדרש טיפול ידני*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "👤 *שם:* " + call_data.get("name", "-") + "\n"
+                    "📞 *טלפון:* " + call_data.get("contact_phone", "-") + "\n"
+                    "📍 *כתובת:* " + call_data.get("address", "-") + "\n"
+                    "📝 *תיאור:* " + call_data.get("description", "-") + "\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "נא לאתר את הכרטיס ולפתוח קריאה ידנית בויזנט."
+                )
+                send_message(_notify_phone, notify_msg)
+                print(f"[Wizenet] לא נמצא לקוח — נשלחה התראה לרועי", flush=True)
+                # הודע ללקוח
+                if not is_boss_phone(client_phone):
+                    send_message(client_phone, "קיבלנו את הפנייה שלך! נציג יצור איתך קשר בהקדם 🙂")
+                    add_to_history(client_phone, "bot", "קיבלנו את הפנייה שלך! נציג יצור איתך קשר בהקדם 🙂")
 
         threading.Thread(target=_background_tasks, args=(_call_copy, _emails, _client_phone), daemon=True).start()
 
