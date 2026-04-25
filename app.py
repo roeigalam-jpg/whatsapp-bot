@@ -1832,8 +1832,11 @@ function api(u,o){return fetch(u,Object.assign({},o||{},{credentials:'include'})
 const historyCache={};
 async function load(){
   const q=document.getElementById('search').value;
-  const r=await api('/api/status'+(q?'?q='+encodeURIComponent(q):''));
-  const d=await r.json();
+  let d;
+  try{
+    const r=await api('/api/status'+(q?'?q='+encodeURIComponent(q):''));
+    d=await r.json();
+  }catch(e){return;}
   // שמור history מה-cache הקיים
   d.chats.forEach(c=>{
     if(historyCache[c.phone]) c.history=historyCache[c.phone];
@@ -1864,13 +1867,16 @@ async function load(){
     if(c){
       const prevCount=c.history?c.history.length:0;
       if(!c.history || c.msg_count>prevCount){
-        // טען היסטוריה — גם אם חדש וגם אם יש הודעות חדשות
         api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{
           c.history=h;historyCache[sel]=h;renderWin(c);
         });
       } else {
-        renderWin(c);
+        renderWin(c); // תמיד רנדר כדי שה-topbar יופיע
       }
+    } else {
+      // המספר לא ב-chats — עדיין הצג את החלון
+      const phantom={phone:sel,bot_active:false,msg_count:0,history:historyCache[sel]||[]};
+      renderWin(phantom);
     }
   }
 }
