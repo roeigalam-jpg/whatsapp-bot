@@ -1962,15 +1962,20 @@ function renderWin(c){
 
 async function pick(phone){
   sel=phone;
-  const c=chats.find(c=>c.phone===phone);
-  if(c){
-    if(!c.history){
-      const r=await api('/api/chat-history/'+phone);
-      c.history=await r.json();
-      historyCache[phone]=c.history;
-    }
-    renderWin(c);
+  renderList(); // סמן active מיד
+  let c=chats.find(c=>c.phone===phone);
+  if(!c){
+    // מספר חדש שאין לו עדיין בchats — צור אובייקט בסיסי
+    c={phone:phone,bot_active:false,msg_count:0,history:[]};
+    chats.push(c);
   }
+  // תמיד טען היסטוריה עדכנית
+  try{
+    const r=await api('/api/chat-history/'+phone);
+    c.history=await r.json();
+    historyCache[phone]=c.history;
+  }catch(e){c.history=[];}
+  renderWin(c);
   renderList();
 }
 async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
