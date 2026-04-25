@@ -1310,9 +1310,10 @@ def api_toggle(phone):
                 sessions.setdefault(phone, {"step": "active", "data": {}})
             add_to_history(phone, "bot", greet)
         else:
+            # אפילו אם השליחה נכשלה — הפעל את הבוט
+            print(f"[Toggle] שליחת ברכה נכשלה ל-{phone} — הבוט עדיין מופעל", flush=True)
             with state_lock:
-                bot_enabled[phone] = False
-                now_active = False
+                sessions.setdefault(phone, {"step": "active", "data": {}})
     save_data()
     return jsonify({"phone": phone, "bot_active": now_active})
 
@@ -1861,10 +1862,12 @@ async function load(){
   if(sel){
     const c=chats.find(c=>c.phone===sel);
     if(c){
-      // רענן היסטוריה אם יש הודעות חדשות
       const prevCount=c.history?c.history.length:0;
-      if(c.msg_count>prevCount){
-        api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{c.history=h;historyCache[sel]=h;renderWin(c);});
+      if(!c.history || c.msg_count>prevCount){
+        // טען היסטוריה — גם אם חדש וגם אם יש הודעות חדשות
+        api('/api/chat-history/'+sel).then(r=>r.json()).then(h=>{
+          c.history=h;historyCache[sel]=h;renderWin(c);
+        });
       } else {
         renderWin(c);
       }
