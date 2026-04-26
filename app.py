@@ -155,56 +155,44 @@ def save_data(sync_firestore=False):
             "runtime_settings": runtime_settings,
             "_save_ts": now_ts
         }
-    # שמור מקומי תמיד — מהיר
+    # שמור על disk בלבד — Firestore לא בשימוש בזמן ריצה
     try:
+        import os as _os
+        _os.makedirs("/data", exist_ok=True)
         with open("/data/data.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
-        print(f"[Save/local] error: {e}", flush=True)
-    if sync_firestore:
-        # שמירה סינכרונית — למחיקות
-        _save_firestore(payload)
-    else:
-        # שמירה async — לשאר
-        threading.Thread(target=_save_firestore, args=(payload,), daemon=True).start()
+        print(f"[Save] error: {e}", flush=True)
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group_state, _data_loaded
     if _data_loaded:
-        return  # כבר נטענו — לא טוען שוב
+        return
     loaded = None
-    local_data = None
 
-    # טען קובץ מקומי
-    try:
-        if os.path.exists("/data/data.json"):
-            with open("/data/data.json", "r", encoding="utf-8") as f:
-                local_data = json.load(f)
-    except Exception as e:
-        print(f"[Load] local error: {e}", flush=True)
-
-    # טען Firestore
-    firestore_data = None
-    db = _get_db()
-    if db:
+    # טען מ-disk בלבד
+    for path in ["/data/data.json", "data.json"]:
         try:
-            col, doc = FIRESTORE_DOC.split("/")
-            snap = db.collection(col).document(doc).get()
-            if snap.exists:
-                firestore_data = snap.to_dict()
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                print(f"[Load] נטען מ-{path}", flush=True)
+                break
         except Exception as e:
-            print(f"[Firestore] load error: {e}", flush=True)
+            print(f"[Load] error from {path}: {e}", flush=True)
 
-    # השתמש בנתונים החדשים יותר לפי timestamp
-    local_ts = (local_data or {}).get("_save_ts", 0)
-    firestore_ts = (firestore_data or {}).get("_save_ts", 0)
-
-    if firestore_data and firestore_ts >= local_ts:
-        loaded = firestore_data
-        print(f"[Load] Firestore (ts={firestore_ts:.0f})", flush=True)
-    elif local_data:
-        loaded = local_data
-        print(f"[Load] local file (ts={local_ts:.0f})", flush=True)
+    # fallback — נסה Firestore רק אם אין קובץ מקומי
+    if not loaded:
+        db = _get_db()
+        if db:
+            try:
+                col, doc = FIRESTORE_DOC.split("/")
+                snap = db.collection(col).document(doc).get()
+                if snap.exists:
+                    loaded = snap.to_dict()
+                    print("[Load] Firestore fallback", flush=True)
+            except Exception as e:
+                print(f"[Firestore] load error: {e}", flush=True)
     if loaded:
         with state_lock:
             sessions           = loaded.get("sessions", {})
