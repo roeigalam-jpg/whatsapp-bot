@@ -1353,39 +1353,30 @@ def api_toggle(phone):
         bot_enabled[phone] = not bot_enabled.get(phone, False)
         now_active = bot_enabled[phone]
         need_greeting = now_active and not greeting_sent.get(phone, False)
+
     if not now_active:
         cancel_reminder(phone)
-        # שמור סינכרונית כדי שה-Firestore יעודכן מיד
-        with state_lock:
-            payload = {
-                "sessions": sessions, "service_calls": service_calls,
-                "bot_enabled": bot_enabled, "chat_history": chat_history,
-                "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
-                "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
-            }
-        try:
-            with open("/data/data.json", "w", encoding="utf-8") as f:
-                import json as _j
-                _j.dump(payload, f, ensure_ascii=False)
-        except Exception:
-            pass
-        _save_firestore(payload)
-        return jsonify({"phone": phone, "bot_active": now_active})
+        save_data(sync_firestore=True)
+        return jsonify({"phone": phone, "bot_active": False})
+
+    # הפעלה — שמור מיד ושלח ברכה ב-thread נפרד
+    with state_lock:
+        sessions.setdefault(phone, {"step": "active", "data": {}})
+    save_data(sync_firestore=True)
+
     if need_greeting:
-        greet = f"{get_greeting()}! איך אפשר לעזור?"
-        sent = send_message(phone, greet)
-        if sent:
-            with state_lock:
-                greeting_sent[phone] = True
-                sessions.setdefault(phone, {"step": "active", "data": {}})
-            add_to_history(phone, "bot", greet)
-        else:
-            # אפילו אם השליחה נכשלה — הפעל את הבוט
-            print(f"[Toggle] שליחת ברכה נכשלה ל-{phone} — הבוט עדיין מופעל", flush=True)
-            with state_lock:
-                sessions.setdefault(phone, {"step": "active", "data": {}})
-    save_data()
-    return jsonify({"phone": phone, "bot_active": now_active})
+        def _send_greet():
+            greet = f"{get_greeting()}! איך אפשר לעזור?"
+            sent = send_message(phone, greet)
+            if sent:
+                with state_lock:
+                    greeting_sent[phone] = True
+                add_to_history(phone, "bot", greet)
+                save_data()
+            print(f"[Toggle] ברכה {'נשלחה' if sent else 'נכשלה'} ל-{phone}", flush=True)
+        threading.Thread(target=_send_greet, daemon=True).start()
+
+    return jsonify({"phone": phone, "bot_active": True})
 
 @app.route("/api/add-contact", methods=["POST"])
 def api_add_contact():
