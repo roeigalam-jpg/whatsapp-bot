@@ -330,85 +330,61 @@ def is_duplicate_green_event(body, receipt_id):
 def build_system_prompt(phone=""):
     greeting = get_greeting()
     phone_display = phone972(phone).replace("972", "0", 1) if phone else ""
-    phone_hint = f"\nמספר הוואטסאפ של הלקוח בשיחה הזו: {phone_display}" if phone_display else ""
-    phone_instruction = f'   שאל: "האם להשתמש במספר {phone_display} לקריאה, או מספר אחר?" — אם אישר, השתמש בו ישירות.' if phone_display else '   בקש מהלקוח מספר טלפון ישראלי תקין (05X).'
-    return f"""אתה {BOT_NAME} — העוזר הדיגיטלי של רועי, מומחה לבריכות שחייה.{phone_hint}
+    phone_hint = f"\nמספר הוואטסאפ של הלקוח: {phone_display}" if phone_display else ""
+    phone_note = f"טלפון: יש לך את מספר הוואטסאפ {phone_display} — שאל 'האם להשתמש בו?' ואם אישר, השתמש בו. אל תשאל שוב." if phone_display else "טלפון: נסה לקבל, אם הלקוח לא נותן — דלג וסכם בלעדיו."
+    return f"""אתה {BOT_NAME} — העוזר של רועי, מומחה בריכות שחייה.{phone_hint}
 
 זהות:
-- שמך {BOT_NAME}
-- אם שואלים מי אתה: "אני {BOT_NAME}, העוזר של רועי"
-- אל תציין שם חברה בכלל
-- אם שואלים על רועי או על החברה — התחמק בנימוס: "רועי ייצור איתך קשר בהקדם"
-- אל תחשוף פרטים אישיים על רועי, על החברה, או על עצמך מעבר לנ"ל
+- שמך {BOT_NAME}, אם שואלים: "אני {BOT_NAME}, העוזר של רועי"
+- אל תציין שם חברה, אל תחשוף פרטים על רועי — "רועי ייצור קשר בהקדם"
 
-ברכה:
-- עכשיו השעה בישראל היא {il_now().strftime('%H:%M')} — הברכה הנכונה היא "{greeting}"
-- השתמש בברכה הזו בפתיחת שיחה חדשה
+שעה נוכחית בישראל: {il_now().strftime('%H:%M')} — ברכה: "{greeting}"
 
-תחום עיסוק — השירותים שאנו מציעים:
-1. אבזור, עבודות גמר ובניית בריכות שחייה
-2. תכנון בריכות מקצועי ועיצוב בהזמנה אישית
-3. שירות תחזוקה שוטפת
-4. שיפוץ וחידוש בריכות שחייה וחדרי מכונות
+שירותים שאנו מציעים:
+1. בנייה, אבזור ועבודות גמר
+2. תכנון ועיצוב בריכות
+3. תחזוקה שוטפת ותקלות
+4. שיפוץ וחידוש בריכות
 
-אם פונים לשירות שאינו ברשימה (תאורה, מזגנים, צביעה, אינסטלציה, גינון וכד') — ענה: "אנחנו מתמחים בבריכות שחייה בלבד, זה לא בתחום שלנו"
+אם הבקשה לא מתחום הבריכות — "אנחנו מתמחים בבריכות בלבד"
 
-בדיקת הגיון לפני פתיחת קריאה:
-- ודא שהבקשה שייכת לאחד מ-4 השירותים ברשימה
-- אם הבקשה אינה הגיונית (לדוגמה: תוספות מזון לבריכה, צביעת מים וכד') — שאל: "לא הבנתי לגמרי, תוכל להסביר?" ואל תפתח קריאה
-- אם נראה שהלקוח צוחק — החזר {{"action":"cancelled","message":"נראה שאתה בודק אותי 😄 אם תצטרך עזרה אמיתית עם הבריכה — אני כאן!"}}
+סגנון — חם, קצר, יעיל:
+- משפט אחד-שניים בלבד
+- זהה מין מהשם
+- אמפתיה קצרה בלבד ("לא נעים, נטפל")
+- אין שמות עובדים
 
-סגנון:
-- עברית קצרה וחמה — כמו שכן טוב שהוא מקצוען
-- הודעה אחת קצרה — שורה עד שתיים בלבד, לא יותר
-- מינימום אמוג'י — אחד לכל היותר
-- זהה מין מהשם (את/אתה)
-- אמפתיה קצרה לפני המשך ("לא נעים, נטפל")
-- אל תציין שמות עובדים
-- נסה לאסוף את כל הפרטים בשאלה אחת: "מה שמך, כתובת הבריכה ומה הבעיה?"
+חוקי ברזל:
+1. שמור כל מידע שהלקוח נתן — אל תשאל עליו שוב לעולם
+2. אסוף הכל בשאלה אחת אם אפשר: "מה שמך, כתובת הבריכה ומה הבעיה?"
+3. אם יש לך שם + כתובת + תיאור — עבור לסיכום מיד, אל תחכה לטלפון
+4. {phone_note}
+5. אחרי 3 הודעות ללא התקדמות — הצע תפריט:
+   "במה אפשר לעזור?
+   1️⃣ בנייה / אבזור
+   2️⃣ תכנון ועיצוב
+   3️⃣ תחזוקה / תקלה
+   4️⃣ שיפוץ וחידוש"
+6. תמונה שהתקבלה — שאל: "מה רואים בתמונה?"
 
-חוק ברזל — אל תשאל אותה שאלה פעמיים:
-- אם הלקוח כבר ענה על שאלה — אל תשאל שוב
-- אם יש לך שם, כתובת ותיאור — תמשיך לאישור
-- טלפון — אם הלקוח נתן את מספרו מהוואטסאפ ואישר, זה מספיק
-- אם הלקוח נתן את כל הפרטים בהודעה אחת — אל תשאל שוב כלום, תלך לאישור
+כשיש שם + כתובת + תיאור — הצג סיכום ובקש אישור:
+"סיכום: [שם], [כתובת], [תיאור]. נכון?"
 
-הודעת פתיחה לשיחה חדשה:
-"{greeting}! איך אפשר לעזור?"
-
-תפריט שירותים — הצג רק אחרי 3 הודעות ללא התקדמות:
-אם הלקוח שלח 3 הודעות (כולל תמונות, הקלטות, שיחות, טקסט סתמי) ועדיין לא ברור מה הוא רוצה — הצע:
-"אולי יעזור אם תבחר מה מתאים לך:
-1️⃣ פרויקט — בנייה / אבזור
-2️⃣ תכנון ועיצוב בהזמנה אישית
-3️⃣ תחזוקה / טיפול בתקלה
-4️⃣ שיפוץ וחידוש בריכה"
-
-"התקדמות" מוגדרת כך: הלקוח ציין סוג שירות, שם, כתובת, או תיאור בעיה ברור.
-אם הלקוח שלח תמונה — שאל: "קיבלתי תמונה — תוכל לספר לי מה רואים בה?"
-
-אחרי שהלקוח מסביר — אסוף:
-1. שם מלא
-2. כתובת הבריכה (רחוב + מספר + עיר) — ודא שנשמע הגיוני
-3. תיאור הבעיה או הבקשה
-4. טלפון ליצירת קשר:
-{phone_instruction}
-   אל תשאל שוב אחרי שאישר.
-
-כשיש לך את כל הפרטים — הצג סיכום קצר ובקש אישור.
-אחרי אישור — החזר JSON בדיוק:
+אחרי אישור — JSON בדיוק:
 {{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"...","tech_name":""}}
 
-בחירת call_type לפי הבקשה:
-- תחזוקה / מים / תקלה / ניטור → "תחזוקה"
-- בנייה / פרויקט / אבזור / גמר → "פרויקט"  
-- שיפוץ / חידוש / שיפוץ בריכה → "שיפוץ"
+call_type לפי הקשר:
+- תחזוקה/מים/תקלה/ניטור → "תחזוקה"
+- בנייה/פרויקט/אבזור → "פרויקט"
+- שיפוץ/חידוש → "שיפוץ"
 - חשמל → "חשמל"
 
-אם ביטל: {{"action":"cancelled"}}
-אחרת: {{"action":"continue","message":"הודעה"}}
+ביטול: {{"action":"cancelled"}}
+אחרת: {{"action":"continue","message":"..."}}
 
-אל תציין מספר קריאה בשיחה."""
+אל תציין מספר קריאה בשיחה.
+
+אם הלקוח שלח משהו לא ברור (נקודה, אות, "?", "הי" וכד') — ענה בחמימות: "היי! איך אפשר לעזור?" ואל תתעלם."""
 
 BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 רועי הוא הבוס שלך. עזור לו בכל דבר ללא הגבלה.
@@ -682,7 +658,7 @@ def transcribe_audio_groq(audio_url):
         return None
 
 def do_open_wizenet(call_data, emails, client_phone):
-    """פתיחת קריאה בפועל בויזנט — ברמת module כדי לאפשר קריאה מכל מקום"""
+    """פתיחת קריאה בפועל בויזנט"""
     wid = open_wizenet_call(call_data)
     if wid:
         call_data["wizenet_id"] = wid
@@ -691,14 +667,55 @@ def do_open_wizenet(call_data, emails, client_phone):
                 if c["id"] == call_data["id"]:
                     c["wizenet_id"] = wid
                     break
+            _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+            _notify_group = runtime_settings.get("notify_group_id", NOTIFY_GROUP_ID)
+            go_group = notify_to_group_state
         save_data()
-        # שלח מספר קריאה לכולם (לקוח ובוס כאחד)
-        msg = "✅ קריאה נפתחה בויזנט — מספר קריאה: #" + str(wid)
-        send_message(client_phone, msg)
-        add_to_history(client_phone, "bot", msg)
+
+        # הודעה ללקוח/בוס עם מספר קריאה
+        msg_client = "✅ קריאה נפתחה בויזנט — מספר קריאה: #" + str(wid)
+        send_message(client_phone, msg_client)
+        add_to_history(client_phone, "bot", msg_client)
+
+        # הודעה למורן/קבוצה עם כל הפרטים + מספר ויזנט
+        name = call_data.get("name", "-")
+        notify_msg = "\n".join([
+            f"🔔 *קריאה חדשה — #{wid}*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"👤 *לקוח:* {name}",
+            f"📞 *טלפון:* {call_data.get('contact_phone', '-')}",
+            f"📍 *כתובת:* {call_data.get('address', '-')}",
+            f"🔧 *סוג:* {call_data.get('call_type', '-')}",
+            f"📝 *תיאור:* {call_data.get('description', '-')}",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"🗂 *מספר קריאה בויזנט:* #{wid}",
+            f"🕐 *נפתח:* {il_now().strftime('%d/%m/%Y %H:%M')}",
+            "",
+            "⚡ יש לזהות את הקריאה במערכת ולשבץ טכנאי."
+        ])
+        if go_group:
+            send_message(_notify_group, notify_msg)
+        else:
+            send_message(_notify_phone, notify_msg)
+
+        # מייל עם מספר ויזנט
+        if emails:
+            send_email_notification(call_data, emails)
+    else:
+        # ויזנט נכשל — שלח הודעה ידנית
+        with state_lock:
+            _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+            go_group = notify_to_group_state
+            _notify_group = runtime_settings.get("notify_group_id", NOTIFY_GROUP_ID)
+        fallback_msg = build_notify_message(client_phone, call_data)
+        if go_group:
+            send_message(_notify_group, fallback_msg)
+        else:
+            send_message(_notify_phone, fallback_msg)
+        if emails:
+            send_email_notification(call_data, emails)
+
     fire_webhook(call_data)
-    if emails:
-        send_email_notification(call_data, emails)
 
 def handle_message(phone, body, msg_type="text", audio_url=None):
     is_boss = is_boss_phone(phone)
@@ -1003,6 +1020,14 @@ def process_green_event(body, receipt_id=None):
         # סטיקר — שומר להיסטוריה אבל לא עונה
         if msg_type == "sticker":
             return
+
+        # הודעה קצרה/לא ברורה (נקודה, אות, ריק) — בכל זאת ענה
+        if body_text and len(body_text.strip()) <= 2 and not is_boss:
+            body_text = body_text.strip()
+
+        # הודעה ריקה / נקודה / תו בודד — תגיב בכל מקרה
+        if body_text.strip() in [".", ",", "-", "?", "!", " ", ""] or len(body_text.strip()) <= 1:
+            body_text = body_text.strip() or "."
 
         if allow_reply:
             # מניעת עיבוד מקביל לאותו מספר
@@ -1465,11 +1490,15 @@ def send_email_notification(call_data, emails):
     if not RESEND_API_KEY or not emails:
         return
     try:
-        subject = f"קריאה חדשה — {call_data.get('name','-')} | {call_data.get('call_type','-')}"
+        wid = call_data.get("wizenet_id", "")
+        subject = f"קריאה חדשה #{wid} — {call_data.get('name','-')} | {call_data.get('call_type','-')}"
+        wizenet_row = f'<tr><td style="padding:8px;color:#666">🗂 ויזנט</td><td style="padding:8px"><b>#{wid}</b></td></tr>' if wid else ""
         body = f"""
 <div dir="rtl" style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto">
-  <h2 style="color:#25d366">🔔 קריאה חדשה נפתחה</h2>
+  <h2 style="color:#25d366">🔔 קריאה חדשה נפתחה — #{wid}</h2>
+  <p style="color:#e74c3c;font-weight:bold">יש לזהות את הקריאה במערכת ולשבץ טכנאי</p>
   <table style="width:100%;border-collapse:collapse">
+    {wizenet_row}
     <tr><td style="padding:8px;color:#666">👤 שם</td><td style="padding:8px"><b>{call_data.get('name','-')}</b></td></tr>
     <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">📞 טלפון</td><td style="padding:8px">{call_data.get('contact_phone','-')}</td></tr>
     <tr><td style="padding:8px;color:#666">📍 כתובת</td><td style="padding:8px">{call_data.get('address','-')}</td></tr>
