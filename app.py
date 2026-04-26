@@ -637,7 +637,7 @@ def schedule_reminder(phone, last_msg):
             add_to_history(phone, "bot", f"[תזכורת 2] {msg2}")
             save_data()
 
-        t2 = threading.Timer(60.0, remind_second)
+        t2 = threading.Timer(300.0, remind_second)
         t2.daemon = True
         with state_lock:
             existing = reminder_timers.get(phone, [])
@@ -646,7 +646,7 @@ def schedule_reminder(phone, last_msg):
             reminder_timers[phone] = existing if isinstance(existing, list) else [t2]
         t2.start()
 
-    t1 = threading.Timer(60.0, remind_first)
+    t1 = threading.Timer(300.0, remind_first)
     t1.daemon = True
     with state_lock:
         reminder_timers[phone] = [t1]
@@ -853,9 +853,16 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 if client_info:
                     print(f"[Wizenet] נמצא לפי טלפון: {client_info['name']}", flush=True)
 
-            # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם
+            # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם + עיר
+            city = ""
+            address = call_data.get("address", "")
+            # חלץ עיר מהכתובת — המילה האחרונה לרוב
+            if address:
+                parts = address.replace(",", " ").split()
+                if parts:
+                    city = parts[-1]
             if not client_info and client_name:
-                results = get_wizenet_client_by_name(client_name)
+                results = get_wizenet_client_by_name(client_name, city=city)
                 if len(results) == 1:
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי שם: {client_info['name']}", flush=True)
@@ -1299,7 +1306,21 @@ def api_toggle(phone):
         need_greeting = now_active and not greeting_sent.get(phone, False)
     if not now_active:
         cancel_reminder(phone)
-        save_data()
+        # שמור סינכרונית כדי שה-Firestore יעודכן מיד
+        with state_lock:
+            payload = {
+                "sessions": sessions, "service_calls": service_calls,
+                "bot_enabled": bot_enabled, "chat_history": chat_history,
+                "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
+                "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
+            }
+        try:
+            with open("data.json", "w", encoding="utf-8") as f:
+                import json as _j
+                _j.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+        _save_firestore(payload)
         return jsonify({"phone": phone, "bot_active": now_active})
     if need_greeting:
         greet = f"{get_greeting()}! איך אפשר לעזור?"
@@ -1477,58 +1498,69 @@ def _wizenet_headers():
     print(f"[Wizenet] Auth: {auth[:40]}", flush=True)
     return {"Authorization": auth, "Content-Type": "application/json"}
 
-def get_wizenet_client_by_phone(contact_phone):
-    """חיפוש לקוח ב-Wizenet לפי טלפון — מחזיר dict או None"""
-    if not WIZENET_API_TOKEN or not contact_phone:
-        return None
-    phone_local = str(contact_phone).replace("-", "").replace(" ", "")
-    if phone_local.startswith("972"):
-        phone_local = "0" + phone_local[3:]
-    try:
-        r = requests.post(
-            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            headers=_wizenet_headers(),
-            json={"ccell": phone_local},
-            timeout=10
-        )
-        print(f"[Wizenet/Phone] status={r.status_code} response={r.text[:200]}", flush=True)
-        if r.status_code == 200 and r.text.strip().startswith("["):
-            data = r.json()
-            if isinstance(data, list) and data:
-                cid = data[0].get("CID", "-1")
-                name = data[0].get("name", "").strip()
-                if str(cid) != "-1" and name:
-                    print(f"[Wizenet/Phone] נמצא: CID={cid} name={name}", flush=True)
-                    return {"cid": str(cid), "name": name}
-    except Exception as e:
-        print(f"[Wizenet/Phone] exception: {e}", flush=True)
-    return None
-
-def get_wizenet_client_by_name(client_name):
-    """חיפוש לקוח ב-Wizenet לפי שם — מחזיר רשימת תוצאות"""
-    if not WIZENET_API_TOKEN or not client_name or len(client_name.strip()) < 2:
+def _wizenet_search(ccell="", ccompany="", ccity=""):
+    """חיפוש לקוח ב-Wizenet — מחזיר רשימת תוצאות"""
+    if not WIZENET_API_TOKEN:
+        return []
+    payload = {}
+    if ccell:
+        payload["ccell"] = ccell
+    if ccompany:
+        payload["ccompany"] = ccompany
+    if ccity:
+        payload["ccity"] = ccity
+    if not payload:
         return []
     try:
         r = requests.post(
             f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
             headers=_wizenet_headers(),
-            json={"ccompany": client_name.strip()},
+            json=payload,
             timeout=10
         )
-        print(f"[Wizenet/Name] status={r.status_code} response={r.text[:300]}", flush=True)
+        print(f"[Wizenet/Search] payload={payload} status={r.status_code} response={r.text[:300]}", flush=True)
         if r.status_code == 200 and r.text.strip().startswith("["):
             data = r.json()
             results = []
             for item in data:
-                cid = item.get("CID", "-1")
-                name = item.get("name", "").strip()
-                if str(cid) != "-1" and name:
-                    results.append({"cid": str(cid), "name": name})
-            print(f"[Wizenet/Name] נמצאו {len(results)} תוצאות", flush=True)
+                cid = str(item.get("cid") or item.get("CID") or "-1")
+                name = (item.get("Ccompany") or item.get("ccompany") or item.get("name") or "").strip()
+                city = (item.get("Ccity") or item.get("ccity") or "").strip()
+                if cid != "-1" and name:
+                    results.append({"cid": cid, "name": name, "city": city})
+            print(f"[Wizenet/Search] נמצאו {len(results)} תוצאות", flush=True)
             return results
     except Exception as e:
-        print(f"[Wizenet/Name] exception: {e}", flush=True)
+        print(f"[Wizenet/Search] exception: {e}", flush=True)
     return []
+
+def get_wizenet_client_by_phone(contact_phone):
+    """חיפוש לפי טלפון"""
+    if not contact_phone:
+        return None
+    phone_local = normalize_il_phone(contact_phone)
+    results = _wizenet_search(ccell=phone_local)
+    return results[0] if results else None
+
+def get_wizenet_client_by_name(client_name, city=""):
+    """חיפוש לפי שם — מנסה גם שם הפוך"""
+    if not client_name or len(client_name.strip()) < 2:
+        return []
+    results = []
+    # נסה שם כפי שהוא
+    r1 = _wizenet_search(ccompany=client_name.strip(), ccity=city)
+    results.extend(r1)
+    # נסה שם הפוך (ניצה חן → חן ניצה)
+    parts = client_name.strip().split()
+    if len(parts) == 2:
+        reversed_name = parts[1] + " " + parts[0]
+        r2 = _wizenet_search(ccompany=reversed_name, ccity=city)
+        # הוסף רק תוצאות חדשות
+        existing_cids = {r["cid"] for r in results}
+        for r in r2:
+            if r["cid"] not in existing_cids:
+                results.append(r)
+    return results
 
 def get_wizenet_client(contact_phone):
     """לתאימות לאחור"""
