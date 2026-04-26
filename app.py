@@ -125,17 +125,23 @@ processing_phones = set()
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
 
 # ─── Firestore שמירה/טעינה ────────────────────────────────────
+_last_save_ts = 0  # timestamp של השמירה האחרונה
+
 def _save_firestore(payload):
-    """שמירה ל-Firestore בthread נפרד — לא חוסמת"""
+    """שמירה ל-Firestore — סינכרונית"""
     db = _get_db()
     if db:
         try:
             col, doc = FIRESTORE_DOC.split("/")
             db.collection(col).document(doc).set(payload)
+            print(f"[Firestore] saved ok", flush=True)
         except Exception as e:
             print(f"[Firestore] save error: {e}", flush=True)
 
-def save_data():
+def save_data(sync_firestore=False):
+    global _last_save_ts
+    now_ts = time.time()
+    _last_save_ts = now_ts
     with state_lock:
         payload = {
             "sessions": sessions,
@@ -145,7 +151,8 @@ def save_data():
             "greeting_sent": greeting_sent,
             "global_bot_on": global_bot_on,
             "notify_to_group": notify_to_group_state,
-            "runtime_settings": runtime_settings
+            "runtime_settings": runtime_settings,
+            "_save_ts": now_ts
         }
     # שמור מקומי תמיד — מהיר
     try:
@@ -153,32 +160,48 @@ def save_data():
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save/local] error: {e}", flush=True)
-    # שמור Firestore בthread נפרד — לא חוסם את הבוט
-    threading.Thread(target=_save_firestore, args=(payload,), daemon=True).start()
+    if sync_firestore:
+        # שמירה סינכרונית — למחיקות
+        _save_firestore(payload)
+    else:
+        # שמירה async — לשאר
+        threading.Thread(target=_save_firestore, args=(payload,), daemon=True).start()
 
 def load_data():
     global sessions, service_calls, bot_enabled, chat_history, greeting_sent, global_bot_on, notify_to_group_state
     loaded = None
-    # נסה Firestore קודם
+    local_data = None
+
+    # טען קובץ מקומי
+    try:
+        if os.path.exists("data.json"):
+            with open("data.json", "r", encoding="utf-8") as f:
+                local_data = json.load(f)
+    except Exception as e:
+        print(f"[Load] local error: {e}", flush=True)
+
+    # טען Firestore
+    firestore_data = None
     db = _get_db()
     if db:
         try:
             col, doc = FIRESTORE_DOC.split("/")
             snap = db.collection(col).document(doc).get()
             if snap.exists:
-                loaded = snap.to_dict()
-                print("[Firestore] data loaded from cloud", flush=True)
+                firestore_data = snap.to_dict()
         except Exception as e:
             print(f"[Firestore] load error: {e}", flush=True)
-    # fallback לקובץ מקומי
-    if not loaded:
-        try:
-            if os.path.exists("data.json"):
-                with open("data.json", "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                print("[Load] data loaded from local file", flush=True)
-        except Exception as e:
-            print(f"[Load] local error: {e}", flush=True)
+
+    # השתמש בנתונים החדשים יותר לפי timestamp
+    local_ts = (local_data or {}).get("_save_ts", 0)
+    firestore_ts = (firestore_data or {}).get("_save_ts", 0)
+
+    if firestore_data and firestore_ts >= local_ts:
+        loaded = firestore_data
+        print(f"[Load] Firestore (ts={firestore_ts:.0f})", flush=True)
+    elif local_data:
+        loaded = local_data
+        print(f"[Load] local file (ts={local_ts:.0f})", flush=True)
     if loaded:
         with state_lock:
             sessions           = loaded.get("sessions", {})
@@ -1432,20 +1455,7 @@ def api_delete_call(call_id):
     with state_lock:
         global service_calls
         service_calls = [c for c in service_calls if c["id"] != call_id]
-        payload = {
-            "sessions": sessions, "service_calls": service_calls,
-            "bot_enabled": bot_enabled, "chat_history": chat_history,
-            "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
-            "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
-        }
-    # שמירה סינכרונית מלאה — מחיקה חייבת להישמר מיד
-    try:
-        with open("data.json", "w", encoding="utf-8") as f:
-            import json as _json
-            _json.dump(payload, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"[Delete] local save error: {e}", flush=True)
-    _save_firestore(payload)
+    save_data(sync_firestore=True)
     return jsonify({"ok": True})
 
 @app.route("/api/service-calls/clear", methods=["POST"])
@@ -1453,19 +1463,7 @@ def api_clear_calls():
     with state_lock:
         global service_calls
         service_calls = []
-        payload = {
-            "sessions": sessions, "service_calls": [],
-            "bot_enabled": bot_enabled, "chat_history": chat_history,
-            "greeting_sent": greeting_sent, "global_bot_on": global_bot_on,
-            "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
-        }
-    try:
-        with open("data.json", "w", encoding="utf-8") as f:
-            import json as _json
-            _json.dump(payload, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"[Clear] local save error: {e}", flush=True)
-    _save_firestore(payload)
+    save_data(sync_firestore=True)
     return jsonify({"ok": True})
 
 @app.route("/api/settings", methods=["GET"])
