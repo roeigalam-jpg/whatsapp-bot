@@ -157,7 +157,7 @@ def save_data(sync_firestore=False):
         }
     # שמור מקומי תמיד — מהיר
     try:
-        with open("data.json", "w", encoding="utf-8") as f:
+        with open("/data/data.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"[Save/local] error: {e}", flush=True)
@@ -177,8 +177,8 @@ def load_data():
 
     # טען קובץ מקומי
     try:
-        if os.path.exists("data.json"):
-            with open("data.json", "r", encoding="utf-8") as f:
+        if os.path.exists("/data/data.json"):
+            with open("/data/data.json", "r", encoding="utf-8") as f:
                 local_data = json.load(f)
     except Exception as e:
         print(f"[Load] local error: {e}", flush=True)
@@ -419,40 +419,28 @@ call_type לפי הקשר:
 - אחרי 2 תגובות שליליות ברצף — סגור את השיחה בנימוס"""
 
 BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
-רועי הוא הבוס שלך. עזור לו בכל דבר ללא הגבלה.
 ישיר, קצר, יעיל. עברית טבעית.
 
-יכולות:
-- ענה על כל שאלה מהידע הרחב שלך — היסטוריה, מדע, טכנולוגיה, עסקים, בריכות, הכל
-- מזג אוויר — אין לך גישה לנתונים בזמן אמת, אבל תגיד זאת בקצרה ותציע חלופה: "לא יכול לבדוק עכשיו, חפש בגוגל מזג אוויר X"
-- תרגומים, ניסוחים, חישובים, ייעוץ — הכל
-- אל תסרב לענות — תמיד תנסה לעזור
+יכולות: ענה על כל שאלה — בריכות, עסקים, טכנולוגיה, הכל.
 
-חוקים:
-- כל שאלה או בקשה כללית — ענה ישירות, אל תפתח קריאה
-- פתח קריאה רק אם רועי אומר במפורש "פתח קריאה" או "תרשום קריאה" ונותן לפחות שם לקוח
-- אם לא ברור — שאל "מה הפרטים?" לפני שפותח
-- טלפון הלקוח — נסה לקבל אם אפשר, אבל אם אין — השתמש ב"-" ואל תעכב את פתיחת הקריאה
-- שלח הודעה רק אם רועי מבקש במפורש עם מספר ותוכן
-- אם אינך בטוח — ענה {"action":"continue","message":"..."} ואל תפתח קריאה
-- אם בהיסטוריה יש "[קריאה נפתחה — שיחה חדשה]" — זו שיחה חדשה, אל תפתח קריאה נוספת על בסיס מה שהיה לפני
+חוקי ברזל:
+1. שיחה כללית — ענה ישירות, אל תפתח קריאה
+2. פתח קריאה רק כשיש שם לקוח + תיאור — אל תחכה לטלפון
+3. אחרי "[קריאה נפתחה — שיחה חדשה]" — שכח הכל מלפני, שיחה חדשה
+4. אל תשאל שוב על מידע שכבר קיבלת
+5. אל תערב פרטים משיחות קודמות — כל קריאה עצמאית
+6. שלח הודעה רק אם רועי מבקש עם מספר ותוכן
 
-כשרועי מבקש לפתוח קריאה עם פרטים (חובה לכלול טלפון אמיתי של הלקוח):
-{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"05XXXXXXXX","tech_name":"שם טכנאי או ריק"}
+פתיחת קריאה — מיד כשיש שם + תיאור:
+{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"-","tech_name":""}
 
-סוגי קריאה לבחור לפי ההקשר:
-- תחזוקה / מים / תקלה → call_type="תחזוקה"
-- בנייה / פרויקט / אבזור → call_type="פרויקט"
-- שיפוץ / חידוש → call_type="שיפוץ"
-- חשמל → call_type="חשמל"
+call_type: תחזוקה/מים/תקלה→"תחזוקה" | בנייה/פרויקט→"פרויקט" | שיפוץ→"שיפוץ" | חשמל→"חשמל"
 
-אם רועי ציין טכנאי — שים שמו ב-tech_name. אחרת — השאר ריק.
-
-כשרועי מבקש לשלוח הודעה:
+שליחת הודעה:
 {"action":"send_message","phone":"...","message":"..."}
 
-בכל שאלה או שיחה:
-{"action":"continue","message":"תשובה קצרה לרועי"}"""
+שיחה רגילה:
+{"action":"continue","message":"תשובה קצרה"}"""
 
 def parse_green_msg(msg_data):
     msg_type_raw = (msg_data or {}).get("typeMessage", "textMessage")
@@ -796,6 +784,8 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     args=(call_data, pending["emails"], pending["client_phone"]),
                     daemon=True
                 ).start()
+                reset_session(phone)
+                add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
                 return f"✅ מעולה, פותח קריאה על כרטיס *{chosen['name']}*"
             return f"בחר מספר בין 1 ל-{len(wiz_options)}, או 'לא' אם אף אחד לא מתאים"
 
@@ -804,6 +794,8 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 pending_wizenet_confirm.pop(phone, None)
             call_data = pending["call_data"]
             call_data["cid_confirmed"] = call_data.get("_wizenet_cid", "-1")
+            reset_session(phone)
+            add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
             threading.Thread(
                 target=do_open_wizenet,
                 args=(call_data, pending["emails"], pending["client_phone"]),
@@ -1372,7 +1364,7 @@ def api_toggle(phone):
                 "notify_to_group": notify_to_group_state, "runtime_settings": runtime_settings
             }
         try:
-            with open("data.json", "w", encoding="utf-8") as f:
+            with open("/data/data.json", "w", encoding="utf-8") as f:
                 import json as _j
                 _j.dump(payload, f, ensure_ascii=False)
         except Exception:
