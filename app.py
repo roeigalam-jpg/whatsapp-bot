@@ -1931,7 +1931,7 @@ function renderList(){
         <div class="ci-last">${c.last_message?(TYPE_ICONS[c.last_message.type]||'')+' '+esc(c.last_message.message).substring(0,32):'ממתין...'}</div>
       </div>
       <div onclick="event.stopPropagation()">
-        <label class="tgl"><input type="checkbox"${c.bot_active?' checked':''} onchange="tog('${c.phone}')"><span class="tsl"></span></label>
+        <label class="tgl"><input type="checkbox"${c.bot_active?' checked':''} onclick="tog('${c.phone}')"><span class="tsl"></span></label>
       </div>
     </div>`).join('');
 }
@@ -2023,7 +2023,22 @@ async function pick(phone){
   renderWin(c);
   renderList();
 }
-async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
+const _toggling=new Set();
+async function tog(phone){
+  if(_toggling.has(phone))return;
+  _toggling.add(phone);
+  try{
+    const r=await api('/api/toggle/'+phone,{method:'POST'});
+    const d=await r.json();
+    const c=chats.find(c=>c.phone===phone);
+    if(c) c.bot_active=d.bot_active;
+    renderList();
+    if(sel===phone) renderWin(c);
+    await load();
+  }finally{
+    setTimeout(()=>_toggling.delete(phone),1000);
+  }
+}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
 async function toggleNotify(){await api('/api/notify-toggle',{method:'POST'});await load();}
 async function syncChats(){
@@ -2288,7 +2303,7 @@ function renderCards(){
           <div class="ci-last">${c.last_message?(ICONS[c.last_message.type]||'')+' '+esc(c.last_message.message).substring(0,38):'ממתין...'}</div>
         </div>
         <label class="tgl" onclick="event.stopPropagation()">
-          <input type="checkbox"${c.bot_active?' checked':''} onchange="tog('${c.phone}')"><span class="tsl"></span>
+          <input type="checkbox"${c.bot_active?' checked':''} onclick="tog('${c.phone}')"><span class="tsl"></span>
         </label>
       </div>
       <div class="card-btns">
@@ -2342,8 +2357,33 @@ function updateCV(c){
   if(atBottom)msgs.scrollTop=msgs.scrollHeight;
 }
 function closeChat(){document.getElementById('chat-view').classList.remove('open');cvPhone=null;}
-async function cvToggle(){if(cvPhone){await api('/api/toggle/'+cvPhone,{method:'POST'});await load();}}
-async function tog(phone){await api('/api/toggle/'+phone,{method:'POST'});await load();}
+async function cvToggle(){
+  if(cvPhone){
+    const r=await api('/api/toggle/'+cvPhone,{method:'POST'});
+    const d=await r.json();
+    const c=chats.find(x=>x.phone===cvPhone);
+    if(c) c.bot_active=d.bot_active;
+    renderCards();
+    if(c) updateCV(c);
+    await load();
+  }
+}
+const _toggling=new Set();
+async function tog(phone){
+  if(_toggling.has(phone))return;
+  _toggling.add(phone);
+  try{
+    const r=await api('/api/toggle/'+phone,{method:'POST'});
+    const d=await r.json();
+    const c=chats.find(c=>c.phone===phone);
+    if(c) c.bot_active=d.bot_active;
+    renderList();
+    if(sel===phone) renderWin(c);
+    await load();
+  }finally{
+    setTimeout(()=>_toggling.delete(phone),1000);
+  }
+}
 async function toggleGlobal(){await api('/api/global-toggle',{method:'POST'});await load();}
 async function toggleNotify(){await api('/api/notify-toggle',{method:'POST'});await load();}
 async function syncChats(){
