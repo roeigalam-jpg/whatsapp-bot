@@ -364,7 +364,7 @@ def build_system_prompt(phone=""):
     greeting = get_greeting()
     phone_display = phone972(phone).replace("972", "0", 1) if phone else ""
     phone_hint = f"\nמספר הוואטסאפ של הלקוח: {phone_display}" if phone_display else ""
-    phone_note = f"טלפון: יש לך את מספר הוואטסאפ {phone_display} — שאל 'האם להשתמש בו?' ואם אישר, השתמש בו. אל תשאל שוב." if phone_display else "טלפון: נסה לקבל, אם הלקוח לא נותן — דלג וסכם בלעדיו."
+    phone_note = f"טלפון: יש לך את מספר הוואטסאפ {phone_display} — שאל פעם אחת: 'האם להשתמש במספר {phone_display}?' אם הלקוח ענה בכל צורה חיובית (כן / בסדר / אחלה / בסדר גמור / נכון) — זה אישור, השתמש בו ועבור לסיכום. אל תשאל שוב לעולם." if phone_display else "טלפון: נסה לקבל, אם הלקוח לא נותן — דלג וסכם בלעדיו."
     return f"""אתה {BOT_NAME} — העוזר של רועי, מומחה בריכות שחייה.{phone_hint}
 
 זהות:
@@ -399,8 +399,9 @@ def build_system_prompt(phone=""):
    3️⃣ תחזוקה / תקלה
    4️⃣ שיפוץ וחידוש"
 6. תמונה שהתקבלה — שאל: "מה רואים בתמונה?"
+7. אם הלקוח מסרב לתת שם ("שמי לא חשוב", "לא חשוב", "פשוט תגיע" וכד') — קבל "ללא שם" ועבור הלאה מיד. אל תשאל שוב.
 
-כשיש שם + כתובת + תיאור — הצג סיכום ובקש אישור:
+כשיש שם (או "ללא שם") + כתובת + תיאור — הצג סיכום ובקש אישור:
 "סיכום: [שם], [כתובת], [תיאור]. נכון?"
 
 אחרי אישור — JSON בדיוק:
@@ -416,6 +417,9 @@ call_type לפי הקשר:
 אחרת: {{"action":"continue","message":"..."}}
 
 אל תציין מספר קריאה בשיחה.
+
+חוק ברזל — אחרי "[קריאה נפתחה — שיחה חדשה]":
+שיחה חדשה לחלוטין. שכח את כל הפרטים הקודמים (שם, כתובת, תיאור). אסור לפתוח קריאה על בסיס מידע מלפני הסימן הזה.
 
 אחרי "[הפנייה נרשמה — ממתינה לטיפול ידני]" — הפנייה כבר נרשמה. אם הלקוח שולח הודעה נוספת, ענה: "הפנייה שלך כבר נרשמה אצלנו — נציג יצור איתך קשר בהקדם 🙂" ואל תפתח קריאה חדשה.
 
@@ -991,7 +995,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 print(f"[Wizenet] לא נמצא לקוח — פותח קריאה ידנית עם cid=-1", flush=True)
                 call_data["cid_confirmed"] = "-1"
                 wiz_result = open_wizenet_call(call_data)
-                call_num = wiz_result.get("call_id", "") if wiz_result else ""
+                call_num = str(wiz_result) if wiz_result else ""
                 call_num_str = f" — מספר קריאה: #{call_num}" if call_num else ""
                 notify_msg = (
                     "⚠️ *לקוח לא זוהה — קריאה נפתחה ידנית*\n"
@@ -1123,9 +1127,14 @@ def process_green_event(body, receipt_id=None):
             try:
                 current_body, current_type, current_audio = body_text, msg_type, audio_url
                 while True:
-                    reply = handle_message(phone, current_body, current_type, audio_url=current_audio)
-                    add_to_history(phone, "bot", reply)
-                    send_message(phone, reply)
+                    try:
+                        reply = handle_message(phone, current_body, current_type, audio_url=current_audio)
+                    except Exception as hm_err:
+                        print(f"[Handle] exception: {hm_err}", flush=True)
+                        reply = "מצטער, אירעה שגיאה. נסה שוב."
+                    if reply:
+                        add_to_history(phone, "bot", reply)
+                        send_message(phone, reply)
                     save_data()
                     # בדוק אם הגיעה הודעה נוספת בזמן העיבוד
                     with state_lock:
