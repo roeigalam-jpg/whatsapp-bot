@@ -59,7 +59,7 @@ except ValueError:
 
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_KEY", "")
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL   = "claude-sonnet-4-20250514"
+CLAUDE_MODEL   = "claude-sonnet-4-6"
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
@@ -526,6 +526,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
     # ניסיון עם retry
     for attempt in range(2):
         try:
+            print(f"[Claude] attempt={attempt} phone={phone} is_boss={is_boss}", flush=True)
             messages = []
             for h in history[-14:]:
                 role = "user" if h["sender"] == "client" else "assistant"
@@ -559,6 +560,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                 },
                 timeout=25
             )
+            print(f"[Claude] status={resp.status_code} attempt={attempt}", flush=True)
             data = resp.json()
             if "content" not in data:
                 print(f"[Claude] error: {data}", flush=True)
@@ -886,12 +888,15 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
 
             # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם + עיר
             city = ""
+            street = ""
             address = call_data.get("address", "")
-            # חלץ עיר מהכתובת — המילה האחרונה לרוב
+            # חלץ עיר ורחוב מהכתובת
             if address:
                 parts = address.replace(",", " ").split()
                 if parts:
                     city = parts[-1]
+                    if len(parts) > 1:
+                        street = " ".join(parts[:-1])
             if not client_info and client_name:
                 results = get_wizenet_client_by_name(client_name, city=city)
                 if len(results) == 1:
@@ -908,6 +913,26 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     send_message(client_phone, confirm_msg)
                     add_to_history(client_phone, "bot", confirm_msg)
                     return
+
+            # שלב 3 — fallback: חפש לפי עיר בלבד (כשהשם לא תואם)
+            if not client_info and city:
+                results = _wizenet_search(ccity=city)
+                print(f"[Wizenet] חיפוש לפי עיר בלבד: '{city}' → {len(results)} תוצאות", flush=True)
+                if len(results) == 1:
+                    client_info = results[0]
+                    print(f"[Wizenet] נמצא לפי עיר: {client_info['name']}", flush=True)
+                elif 1 < len(results) <= 10:
+                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                    confirm_msg = "לא מצאתי לפי שם, אבל מצאתי לקוחות ב" + city + ":\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
+                    with state_lock:
+                        pending_wizenet_confirm[client_phone] = {
+                            "call_data": call_data, "emails": emails,
+                            "client_phone": client_phone, "wiz_options": results[:5]
+                        }
+                    send_message(client_phone, confirm_msg)
+                    add_to_history(client_phone, "bot", confirm_msg)
+                    return
+                # אם >10 תוצאות — עיר גדולה מדי, לא מציגים רשימה
 
             if client_info:
                 wiz_name = client_info["name"]
