@@ -251,6 +251,22 @@ def validate_il_phone(p):
         return False
     return clean.isdigit()
 
+_CITY_ALIASES = {
+    'ת"א': "תל אביב", "תא": "תל אביב", "ת.א": "תל אביב", "תל-אביב": "תל אביב",
+    'ב"ש': "באר שבע", "באר-שבע": "באר שבע",
+    'י"ם': "ירושלים", "ירושלים": "ירושלים",
+    "פ"ת": "פתח תקווה", "פ.ת": "פתח תקווה", "פתח-תקווה": "פתח תקווה",
+    "ר"ג": "רמת גן", "ר.ג": "רמת גן", "רמת-גן": "רמת גן",
+    "חולון": "חולון", "בת-ים": "בת ים", 'ב"י': "בת ים",
+    "ק"ש": "קריית שמונה", "כ"ס": "כפר סבא",
+}
+
+def normalize_city(city):
+    """נרמול שם עיר — מחזיר שם מלא"""
+    if not city:
+        return city
+    return _CITY_ALIASES.get(city.strip(), city.strip())
+
 def normalize_il_phone(p):
     """נרמול מספר טלפון לפורמט 05X"""
     clean = str(p).replace("-", "").replace(" ", "").replace("+", "")
@@ -400,6 +416,8 @@ call_type לפי הקשר:
 אחרת: {{"action":"continue","message":"..."}}
 
 אל תציין מספר קריאה בשיחה.
+
+אחרי "[הפנייה נרשמה — ממתינה לטיפול ידני]" — הפנייה כבר נרשמה. אם הלקוח שולח הודעה נוספת, ענה: "הפנייה שלך כבר נרשמה אצלנו — נציג יצור איתך קשר בהקדם 🙂" ואל תפתח קריאה חדשה.
 
 אם הלקוח שלח משהו לא ברור (נקודה, אות, "?", "הי" וכד') — ענה בחמימות: "היי! איך אפשר לעזור?" ואל תתעלם.
 
@@ -811,7 +829,8 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
             )
             send_message(_notify_phone, notify_manual)
-            return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. נציג יצור איתך קשר בהקדם לטיפול 🙂"
+            add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
+            return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. הפנייה נרשמה אצלנו ונציג יצור איתך קשר בהקדם 🙂"
 
         # לא הבין
         if wiz_options:
@@ -894,7 +913,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             if address:
                 parts = address.replace(",", " ").split()
                 if parts:
-                    city = parts[-1]
+                    city = normalize_city(parts[-1])
                     if len(parts) > 1:
                         street = " ".join(parts[:-1])
             if not client_info and client_name:
