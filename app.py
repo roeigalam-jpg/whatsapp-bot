@@ -120,7 +120,8 @@ runtime_settings = {
 }
 last_bot_msg_time = {}
 reminder_timers   = {}
-processing_phones = set()
+processing_phones = {}  # phone → timestamp התחלת עיבוד
+PROCESSING_TIMEOUT = 60  # שניות מקסימום לנעילה
 # קריאות שממתינות לאישור לקוח — phone → call_data
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
 
@@ -1042,12 +1043,13 @@ def process_green_event(body, receipt_id=None):
             body_text = body_text.strip() or "."
 
         if allow_reply:
-            # מניעת עיבוד מקביל לאותו מספר
+            # מניעת עיבוד מקביל לאותו מספר (עם timeout אוטומטי)
             with state_lock:
-                if phone in processing_phones:
+                started = processing_phones.get(phone)
+                if started and (time.time() - started) < PROCESSING_TIMEOUT:
                     print(f"[Skip] {phone} כבר בעיבוד, מדלג", flush=True)
                     return
-                processing_phones.add(phone)
+                processing_phones[phone] = time.time()
             try:
                 reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
                 add_to_history(phone, "bot", reply)
@@ -1055,7 +1057,7 @@ def process_green_event(body, receipt_id=None):
                 save_data()
             finally:
                 with state_lock:
-                    processing_phones.discard(phone)
+                    processing_phones.pop(phone, None)
 
     elif webhook_type == "incomingCall":
         phone = sender.get("chatId", "").replace("@c.us", "")
@@ -1609,7 +1611,7 @@ def open_wizenet_call(call_data):
             "subject": call_data.get('description', call_data.get('call_type', 'שירות'))[:80],
             "ccell": contact_phone,
             "CntctName": call_data.get("name", ""),
-            "comments": f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
+            "comments": call_data.get('description', '') if call_data.get('cid_confirmed', '-1') != '-1' else f"{call_data.get('description', '')} | כתובת: {call_data.get('address', '')}",
             "OriginID": "5",
             "calltypeid": call_type_id,
             "statusid": "113",
