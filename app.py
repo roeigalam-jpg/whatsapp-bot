@@ -916,7 +916,9 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     city = normalize_city(parts[-1])
                     if len(parts) > 1:
                         street = " ".join(parts[:-1])
-            if not client_info and client_name:
+            _FAKE_NAMES = {"ללא שם", "לא ידוע", "מפקח", "אנונימי", "אלמוני", "לא", "לא מוכר", "unknown", "-"}
+            real_name = client_name and client_name.strip().lower() not in {n.lower() for n in _FAKE_NAMES}
+            if not client_info and real_name:
                 results = get_wizenet_client_by_name(client_name, city=city)
                 if len(results) == 1:
                     client_info = results[0]
@@ -933,14 +935,33 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     add_to_history(client_phone, "bot", confirm_msg)
                     return
 
-            # שלב 3 — fallback: חפש לפי עיר בלבד (כשהשם לא תואם)
+            # שלב 3 — חפש לפי רחוב + עיר (שם רחוב כ-ccompany)
+            if not client_info and street and city:
+                results = _wizenet_search(ccompany=street, ccity=city)
+                print(f"[Wizenet] חיפוש לפי רחוב: '{street}' עיר='{city}' → {len(results)} תוצאות", flush=True)
+                if len(results) == 1:
+                    client_info = results[0]
+                    print(f"[Wizenet] נמצא לפי רחוב: {client_info['name']}", flush=True)
+                elif 1 < len(results) <= 10:
+                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                    confirm_msg = "מצאתי לקוחות בכתובת זו:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
+                    with state_lock:
+                        pending_wizenet_confirm[client_phone] = {
+                            "call_data": call_data, "emails": emails,
+                            "client_phone": client_phone, "wiz_options": results[:5]
+                        }
+                    send_message(client_phone, confirm_msg)
+                    add_to_history(client_phone, "bot", confirm_msg)
+                    return
+
+            # שלב 4 — fallback: חפש לפי עיר בלבד
             if not client_info and city:
                 results = _wizenet_search(ccity=city)
                 print(f"[Wizenet] חיפוש לפי עיר בלבד: '{city}' → {len(results)} תוצאות", flush=True)
                 if len(results) == 1:
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי עיר: {client_info['name']}", flush=True)
-                elif 1 < len(results) <= 10:
+                elif 1 < len(results) <= 8:
                     options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
                     confirm_msg = "לא מצאתי לפי שם, אבל מצאתי לקוחות ב" + city + ":\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                     with state_lock:
@@ -951,7 +972,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     send_message(client_phone, confirm_msg)
                     add_to_history(client_phone, "bot", confirm_msg)
                     return
-                # אם >10 תוצאות — עיר גדולה מדי, לא מציגים רשימה
 
             if client_info:
                 wiz_name = client_info["name"]
@@ -965,25 +985,29 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 send_message(client_phone, confirm_msg)
                 add_to_history(client_phone, "bot", confirm_msg)
             else:
-                # לא נמצא לקוח — לא פותחים קריאה, מודיעים לרועי לטיפול ידני
+                # לא נמצא לקוח אחרי כל הניסיונות — פותחים קריאה ידנית בויזנט עם cid=-1
                 with state_lock:
                     _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                print(f"[Wizenet] לא נמצא לקוח — פותח קריאה ידנית עם cid=-1", flush=True)
+                call_data["cid_confirmed"] = "-1"
+                wiz_result = open_wizenet_call(call_data)
+                call_num = wiz_result.get("call_id", "") if wiz_result else ""
+                call_num_str = f" — מספר קריאה: #{call_num}" if call_num else ""
                 notify_msg = (
-                    "⚠️ *לקוח לא זוהה — נדרש טיפול ידני*\n"
+                    "⚠️ *לקוח לא זוהה — קריאה נפתחה ידנית*\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n"
                     "👤 *שם:* " + call_data.get("name", "-") + "\n"
                     "📞 *טלפון:* " + call_data.get("contact_phone", "-") + "\n"
                     "📍 *כתובת:* " + call_data.get("address", "-") + "\n"
                     "📝 *תיאור:* " + call_data.get("description", "-") + "\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "נא לאתר את הכרטיס ולפתוח קריאה ידנית בויזנט."
+                    "נא לשייך את הקריאה לכרטיס הנכון בויזנט." + call_num_str
                 )
                 send_message(_notify_phone, notify_msg)
-                print(f"[Wizenet] לא נמצא לקוח — נשלחה התראה לרועי", flush=True)
-                # הודע ללקוח
                 if not is_boss_phone(client_phone):
-                    send_message(client_phone, "קיבלנו את הפנייה שלך! נציג יצור איתך קשר בהקדם 🙂")
-                    add_to_history(client_phone, "bot", "קיבלנו את הפנייה שלך! נציג יצור איתך קשר בהקדם 🙂")
+                    client_msg = f"✅ הפנייה נרשמה בהצלחה{call_num_str}\nנציג יצור איתך קשר בהקדם 🙂"
+                    send_message(client_phone, client_msg)
+                    add_to_history(client_phone, "bot", client_msg)
 
         threading.Thread(target=_background_tasks, args=(_call_copy, _emails, _client_phone), daemon=True).start()
 
