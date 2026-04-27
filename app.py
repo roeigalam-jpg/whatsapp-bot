@@ -120,7 +120,8 @@ runtime_settings = {
 }
 last_bot_msg_time = {}
 reminder_timers   = {}
-processing_phones = {}  # phone → timestamp התחלת עיבוד
+processing_phones = {}   # phone → timestamp התחלת עיבוד
+pending_messages   = {}  # phone → (body_text, msg_type, audio_url) — הודעה שהגיעה בזמן עיבוד
 PROCESSING_TIMEOUT = 60  # שניות מקסימום לנעילה
 # קריאות שממתינות לאישור לקוח — phone → call_data
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
@@ -1043,21 +1044,33 @@ def process_green_event(body, receipt_id=None):
             body_text = body_text.strip() or "."
 
         if allow_reply:
-            # מניעת עיבוד מקביל לאותו מספר (עם timeout אוטומטי)
+            # מניעת עיבוד מקביל — שומר הודעה ממתינה במקום לזרוק
             with state_lock:
                 started = processing_phones.get(phone)
                 if started and (time.time() - started) < PROCESSING_TIMEOUT:
-                    print(f"[Skip] {phone} כבר בעיבוד, מדלג", flush=True)
+                    pending_messages[phone] = (body_text, msg_type, audio_url)
+                    print(f"[Queue] {phone} בעיבוד — הודעה נשמרה לתור", flush=True)
                     return
                 processing_phones[phone] = time.time()
             try:
-                reply = handle_message(phone, body_text, msg_type, audio_url=audio_url)
-                add_to_history(phone, "bot", reply)
-                send_message(phone, reply)
-                save_data()
+                current_body, current_type, current_audio = body_text, msg_type, audio_url
+                while True:
+                    reply = handle_message(phone, current_body, current_type, audio_url=current_audio)
+                    add_to_history(phone, "bot", reply)
+                    send_message(phone, reply)
+                    save_data()
+                    # בדוק אם הגיעה הודעה נוספת בזמן העיבוד
+                    with state_lock:
+                        nxt = pending_messages.pop(phone, None)
+                        if nxt:
+                            processing_phones[phone] = time.time()
+                    if not nxt:
+                        break
+                    current_body, current_type, current_audio = nxt
             finally:
                 with state_lock:
                     processing_phones.pop(phone, None)
+                    pending_messages.pop(phone, None)
 
     elif webhook_type == "incomingCall":
         phone = sender.get("chatId", "").replace("@c.us", "")
