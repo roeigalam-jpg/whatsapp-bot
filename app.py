@@ -261,11 +261,54 @@ _CITY_ALIASES = {
     'ק"ש': "קריית שמונה", 'כ"ס': "כפר סבא",
 }
 
+# ערים ישראליות עם שם של שתי מילים
+_TWO_WORD_CITIES = {
+    "תל אביב", "בת ים", "רמת גן", "פתח תקווה", "ראש העין", "הוד השרון",
+    "כפר סבא", "קריית שמונה", "קריית גת", "קריית מוצקין", "קריית אתא",
+    "קריית ביאליק", "קריית ים", "ראשון לציון", "גבעת שמואל", "אור יהודה",
+    "אבן יהודה", "מגדל העמק", "נס ציונה", "כפר יונה", "גן יבנה",
+    "באר שבע", "רמת השרון", "גבעתיים", "בני ברק", "כפר נהר",
+    "מודיעין עילית", "ביתר עילית", "אלעד", "אור עקיבא", "יבנה",
+    "נשר", "טירת כרמל", "קרית שמונה", "מעלות תרשיחא",
+}
+
 def normalize_city(city):
     """נרמול שם עיר — מחזיר שם מלא"""
     if not city:
         return city
     return _CITY_ALIASES.get(city.strip(), city.strip())
+
+def extract_city_and_street(address):
+    """חלץ עיר ורחוב מכתובת — תומך בערים עם שם כפול ומסיר מספר בית מהרחוב"""
+    if not address:
+        return "", ""
+    address = address.replace(",", " ").strip()
+    parts = address.split()
+    if not parts:
+        return "", ""
+
+    city = ""
+    street_parts = []
+
+    # בדוק אם 2 מילים אחרונות הן עיר ידועה
+    if len(parts) >= 2:
+        candidate_two = parts[-2] + " " + parts[-1]
+        norm_two = normalize_city(candidate_two)
+        if norm_two in _TWO_WORD_CITIES or candidate_two in _TWO_WORD_CITIES:
+            city = norm_two if norm_two in _TWO_WORD_CITIES else candidate_two
+            street_parts = parts[:-2]
+        else:
+            city = normalize_city(parts[-1])
+            street_parts = parts[:-1]
+    else:
+        city = normalize_city(parts[-1])
+        street_parts = []
+
+    # חלץ שם רחוב ללא מספר בית (מספרים)
+    street_name_parts = [p for p in street_parts if not p.isdigit()]
+    street = " ".join(street_name_parts)
+
+    return city, street
 
 def normalize_il_phone(p):
     """נרמול מספר טלפון לפורמט 05X"""
@@ -435,12 +478,14 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 
 יכולות: ענה על כל שאלה — בריכות, עסקים, טכנולוגיה, הכל.
 
+מאגר לקוחות: אתה מחובר למערכת Wizenet — חיפוש לקוח רץ אוטומטית ברקע לפי שם/כתובת/טלפון. אל תגיד שאתה לא מחובר. אל תגיד שאינך יכול לאתר לפי כתובת. החיפוש קורה בעצמו.
+
 חוקי ברזל:
 1. שיחה כללית — ענה ישירות, אל תפתח קריאה
 2. פתח קריאה רק כשיש שם לקוח + תיאור — אל תחכה לטלפון
-3. אחרי "[קריאה נפתחה — שיחה חדשה]" — שכח הכל מלפני, שיחה חדשה
+3. חוק ברזל — אחרי "[קריאה נפתחה — שיחה חדשה]": שיחה חדשה לחלוטין. שכח את כל הפרטים הקודמים (שם, כתובת, תיאור). אסור לפתוח קריאה על בסיס מידע מלפני הסימן הזה — גם אם הוא קיים בהיסטוריה.
 4. אל תשאל שוב על מידע שכבר קיבלת
-5. אל תערב פרטים משיחות קודמות — כל קריאה עצמאית
+5. כל קריאה עצמאית — אל תערב פרטים מקריאות קודמות
 6. שלח הודעה רק אם רועי מבקש עם מספר ותוכן
 
 פתיחת קריאה — מיד כשיש שם + תיאור:
@@ -454,11 +499,23 @@ call_type: תחזוקה/מים/תקלה→"תחזוקה" | בנייה/פרויק
 שיחה רגילה:
 {"action":"continue","message":"תשובה קצרה"}"""
 
+def _extract_quoted_text(d):
+    """חלץ טקסט מהודעה מצוטטת (reply) — מנסה כמה מיקומים"""
+    # הטקסט החדש של השולח
+    text = (d.get("extendedTextMessageData") or {}).get("text", "") or \
+           (d.get("textMessageData") or {}).get("textMessage", "")
+    if text:
+        return text
+    # fallback — אם השולח לא הוסיף טקסט, השתמש בציטוט עצמו
+    quoted = (d.get("extendedTextMessageData") or {}).get("quotedMessage", {}) or {}
+    return (quoted.get("textMessage") or quoted.get("text") or "[הקפיץ הודעה]")
+
 def parse_green_msg(msg_data):
     msg_type_raw = (msg_data or {}).get("typeMessage", "textMessage")
     type_map = {
         "textMessage":         ("text",     lambda d: d.get("textMessageData",{}).get("textMessage","") or d.get("extendedTextMessageData",{}).get("text","")),
         "extendedTextMessage": ("text",     lambda d: d.get("extendedTextMessageData",{}).get("text","") or d.get("textMessageData",{}).get("textMessage","")),
+        "quotedMessage":       ("text",     _extract_quoted_text),
         "imageMessage":        ("image",    lambda d: "[שלח תמונה]"),
         "audioMessage":        ("audio",    lambda d: "[שלח הקלטה קולית]"),
         "videoMessage":        ("video",    lambda d: "[שלח וידאו]"),
@@ -910,16 +967,9 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     print(f"[Wizenet] נמצא לפי טלפון: {client_info['name']}", flush=True)
 
             # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם + עיר
-            city = ""
-            street = ""
             address = call_data.get("address", "")
-            # חלץ עיר ורחוב מהכתובת
-            if address:
-                parts = address.replace(",", " ").split()
-                if parts:
-                    city = normalize_city(parts[-1])
-                    if len(parts) > 1:
-                        street = " ".join(parts[:-1])
+            city, street = extract_city_and_street(address)
+            print(f"[Wizenet] כתובת='{address}' → עיר='{city}' רחוב='{street}'", flush=True)
             _FAKE_NAMES = {"ללא שם", "לא ידוע", "מפקח", "אנונימי", "אלמוני", "לא", "לא מוכר", "unknown", "-"}
             real_name = client_name and client_name.strip().lower() not in {n.lower() for n in _FAKE_NAMES}
             if not client_info and real_name:
@@ -928,9 +978,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי שם: {client_info['name']}", flush=True)
                 elif len(results) > 1:
-                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
-                    confirm_msg = "מצאתי כמה לקוחות:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                     with state_lock:
+                        if client_phone in pending_wizenet_confirm:
+                            return
+                        options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                        confirm_msg = "מצאתי כמה לקוחות:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                         pending_wizenet_confirm[client_phone] = {
                             "call_data": call_data, "emails": emails,
                             "client_phone": client_phone, "wiz_options": results[:5]
@@ -947,9 +999,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי רחוב: {client_info['name']}", flush=True)
                 elif 1 < len(results) <= 10:
-                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
-                    confirm_msg = "מצאתי לקוחות בכתובת זו:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                     with state_lock:
+                        if client_phone in pending_wizenet_confirm:
+                            return
+                        options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                        confirm_msg = "מצאתי לקוחות בכתובת זו:\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                         pending_wizenet_confirm[client_phone] = {
                             "call_data": call_data, "emails": emails,
                             "client_phone": client_phone, "wiz_options": results[:5]
@@ -966,9 +1020,11 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי עיר: {client_info['name']}", flush=True)
                 elif 1 < len(results) <= 8:
-                    options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
-                    confirm_msg = "לא מצאתי לפי שם, אבל מצאתי לקוחות ב" + city + ":\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                     with state_lock:
+                        if client_phone in pending_wizenet_confirm:
+                            return
+                        options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                        confirm_msg = "לא מצאתי לפי שם, אבל מצאתי לקוחות ב" + city + ":\n" + options + "\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
                         pending_wizenet_confirm[client_phone] = {
                             "call_data": call_data, "emails": emails,
                             "client_phone": client_phone, "wiz_options": results[:5]
@@ -981,6 +1037,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 wiz_name = client_info["name"]
                 call_data["_wizenet_cid"] = client_info["cid"]
                 with state_lock:
+                    # guard: אם כבר ממתינים לאישור על אותו phone — לא לשלוח שוב
+                    if client_phone in pending_wizenet_confirm:
+                        print(f"[Wizenet] guard: {client_phone} כבר ממתין לאישור — מדלג", flush=True)
+                        return
                     pending_wizenet_confirm[client_phone] = {
                         "call_data": call_data, "emails": emails,
                         "client_phone": client_phone, "wiz_name": wiz_name
@@ -1081,6 +1141,8 @@ def process_green_event(body, receipt_id=None):
             elif type_msg == "stickerMessage":
                 body_text = "[שלח סטיקר]"
                 msg_type = "sticker"
+            elif type_msg in ("quotedMessage", "extendedTextMessage"):
+                body_text = "[הקפיץ הודעה]"
             else:
                 return  # סוג לא מוכר — מדלג
 
@@ -1620,14 +1682,16 @@ def _wizenet_search(ccell="", ccompany="", ccity=""):
         print(f"[Wizenet/Search] payload={payload} status={r.status_code} response={r.text[:300]}", flush=True)
         if r.status_code == 200 and r.text.strip().startswith("["):
             data = r.json()
+            _WIZ_PLACEHOLDER = {"לא פעיל", "ללא שם", "לא ידוע", "מפקח", "אנונימי",
+                                 "אלמוני", "לא", "לא מוכר", "unknown", "-", "test", "בדיקה", "לא רלוונטי"}
             results = []
             for item in data:
                 cid = str(item.get("cid") or item.get("CID") or "-1")
                 name = (item.get("Ccompany") or item.get("ccompany") or item.get("name") or "").strip()
                 city = (item.get("Ccity") or item.get("ccity") or "").strip()
-                if cid != "-1" and name:
+                if cid != "-1" and name and name.lower() not in {n.lower() for n in _WIZ_PLACEHOLDER}:
                     results.append({"cid": cid, "name": name, "city": city})
-            print(f"[Wizenet/Search] נמצאו {len(results)} תוצאות", flush=True)
+            print(f"[Wizenet/Search] נמצאו {len(results)} תוצאות (אחרי סינון placeholder)", flush=True)
             return results
     except Exception as e:
         print(f"[Wizenet/Search] exception: {e}", flush=True)
