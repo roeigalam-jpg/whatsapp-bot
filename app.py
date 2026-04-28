@@ -211,9 +211,23 @@ def load_data():
 load_data()
 
 # ─── כלים ─────────────────────────────────────────────────────
-def il_now():
-    """זמן ישראל נכון — UTC+3"""
-    return datetime.now(timezone.utc) + timedelta(hours=3)
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _IL_TZ = _ZoneInfo("Asia/Jerusalem")
+    def il_now():
+        return datetime.now(_IL_TZ)
+except Exception:
+    try:
+        import pytz as _pytz
+        _IL_TZ = _pytz.timezone("Asia/Jerusalem")
+        def il_now():
+            return datetime.now(_pytz.utc).astimezone(_IL_TZ)
+    except Exception:
+        def il_now():
+            # fallback — UTC+2 (שעון קיץ) או UTC+3 (שעון חורף)
+            import time as _time
+            dst = _time.daylight and _time.localtime().tm_isdst
+            return datetime.now(timezone.utc) + timedelta(hours=2 if not dst else 3)
 
 def phone972(p):
     p = str(p).replace("@c.us", "").replace("-", "").replace(" ", "").strip()
@@ -1203,8 +1217,9 @@ def process_green_event(body, receipt_id=None):
                         nxt = pending_messages.pop(phone, None)
                         if nxt:
                             processing_phones[phone] = time.time()
-                    if not nxt:
-                        break
+                        else:
+                            processing_phones.pop(phone, None)
+                            break
                     current_body, current_type, current_audio = nxt
             finally:
                 with state_lock:
@@ -1513,6 +1528,7 @@ def api_toggle(phone):
             if sent:
                 with state_lock:
                     greeting_sent[phone] = True
+                cancel_reminder(phone)  # בטל תזכורות ישנות
                 add_to_history(phone, "bot", greet)
                 save_data()
             print(f"[Toggle] ברכה {'נשלחה' if sent else 'נכשלה'} ל-{phone}", flush=True)
@@ -1544,6 +1560,7 @@ def api_send_greeting(phone):
             greeting_sent[phone] = True
             bot_enabled[phone] = True
             sessions[phone] = {"step": "active", "data": {}}
+        cancel_reminder(phone)  # בטל תזכורות ישנות — לא לשלוח ברכה מיושנת
         add_to_history(phone, "bot", greet)
         save_data()
     return jsonify({"ok": sent})
