@@ -1272,31 +1272,38 @@ def process_green_event(body, receipt_id=None):
                     print(f"[Queue] {phone} בעיבוד — הודעה נשמרה לתור", flush=True)
                     return
                 processing_phones[phone] = time.time()
-            try:
-                current_body, current_type, current_audio = body_text, msg_type, audio_url
-                while True:
-                    try:
-                        reply = handle_message(phone, current_body, current_type, audio_url=current_audio)
-                    except Exception as hm_err:
-                        print(f"[Handle] exception: {hm_err}", flush=True)
-                        reply = "מצטער, אירעה שגיאה. נסה שוב."
-                    if reply:
-                        add_to_history(phone, "bot", reply)
-                        send_message(phone, reply)
-                    save_data()
-                    # בדוק אם הגיעה הודעה נוספת בזמן העיבוד
+
+            def _process_in_bg(ph, first_body, first_type, first_audio):
+                try:
+                    current_body, current_type, current_audio = first_body, first_type, first_audio
+                    while True:
+                        try:
+                            reply = handle_message(ph, current_body, current_type, audio_url=current_audio)
+                        except Exception as hm_err:
+                            print(f"[Handle] exception: {hm_err}", flush=True)
+                            reply = "מצטער, אירעה שגיאה. נסה שוב."
+                        if reply:
+                            add_to_history(ph, "bot", reply)
+                            send_message(ph, reply)
+                        save_data()
+                        with state_lock:
+                            nxt = pending_messages.pop(ph, None)
+                            if nxt:
+                                processing_phones[ph] = time.time()
+                            else:
+                                processing_phones.pop(ph, None)
+                                break
+                        current_body, current_type, current_audio = nxt
+                finally:
                     with state_lock:
-                        nxt = pending_messages.pop(phone, None)
-                        if nxt:
-                            processing_phones[phone] = time.time()
-                        else:
-                            processing_phones.pop(phone, None)
-                            break
-                    current_body, current_type, current_audio = nxt
-            finally:
-                with state_lock:
-                    processing_phones.pop(phone, None)
-                    pending_messages.pop(phone, None)
+                        processing_phones.pop(ph, None)
+                        pending_messages.pop(ph, None)
+
+            threading.Thread(
+                target=_process_in_bg,
+                args=(phone, body_text, msg_type, audio_url),
+                daemon=True
+            ).start()
 
     elif webhook_type == "incomingCall":
         phone = sender.get("chatId", "").replace("@c.us", "")
