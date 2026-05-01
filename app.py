@@ -639,6 +639,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                 messages.append({"role": "user", "content": current_msg})
 
             system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
+            print(f"[Claude] sending {len(messages)} messages to API...", flush=True)
             resp = requests.post(
                 CLAUDE_API_URL,
                 headers={
@@ -652,7 +653,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                     "system": system,
                     "messages": messages
                 },
-                timeout=25
+                timeout=(10, 30)
             )
             print(f"[Claude] status={resp.status_code} attempt={attempt}", flush=True)
             data = resp.json()
@@ -1208,6 +1209,8 @@ def process_green_event(body, receipt_id=None):
                                 processing_phones.pop(ph, None)
                                 break
                         current_body, current_type, current_audio = nxt
+                except BaseException as fatal:
+                    print(f"[BG] FATAL {type(fatal).__name__}: {fatal}", flush=True)
                 finally:
                     with state_lock:
                         processing_phones.pop(ph, None)
