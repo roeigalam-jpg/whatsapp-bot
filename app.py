@@ -1607,11 +1607,21 @@ def api_toggle(phone):
 
             if last_client_msg and last_client_msg not in ("[התקשר בשיחת וואטסאפ]",):
                 print(f"[Toggle] לקוח כבר כתב — מעבד הודעה קיימת: {last_client_msg[:60]}", flush=True)
+                # נעל processing_phones כדי למנוע ריצה מקבילה עם webhook
+                with state_lock:
+                    already = processing_phones.get(phone)
+                    if already and (time.time() - already) < PROCESSING_TIMEOUT:
+                        print(f"[Toggle] {phone} כבר בעיבוד — מדלג", flush=True)
+                        return
+                    processing_phones[phone] = time.time()
                 try:
                     reply = handle_message(phone, last_client_msg, last_client_type)
                 except Exception as e:
                     print(f"[Toggle] handle_message error: {e}", flush=True)
                     reply = f"{get_greeting()}! איך אפשר לעזור?"
+                finally:
+                    with state_lock:
+                        processing_phones.pop(phone, None)
                 if reply:
                     with state_lock:
                         greeting_sent[phone] = True
@@ -1664,11 +1674,20 @@ def api_send_greeting(phone):
 
     if last_client_msg and last_client_msg not in ("[התקשר בשיחת וואטסאפ]",):
         def _reply():
+            with state_lock:
+                already = processing_phones.get(phone)
+                if already and (time.time() - already) < PROCESSING_TIMEOUT:
+                    print(f"[Greeting] {phone} כבר בעיבוד — מדלג", flush=True)
+                    return
+                processing_phones[phone] = time.time()
             try:
                 reply = handle_message(phone, last_client_msg, last_client_type)
             except Exception as e:
                 print(f"[Greeting] handle_message error: {e}", flush=True)
                 reply = f"{get_greeting()}! איך אפשר לעזור?"
+            finally:
+                with state_lock:
+                    processing_phones.pop(phone, None)
             if reply:
                 with state_lock:
                     greeting_sent[phone] = True
