@@ -458,7 +458,12 @@ def build_system_prompt(phone=""):
 6. תמונה שהתקבלה — שאל: "מה רואים בתמונה?"
 7. אם הלקוח מסרב לתת שם ("שמי לא חשוב", "לא חשוב", "פשוט תגיע" וכד') — קבל "ללא שם" ועבור הלאה מיד. אל תשאל שוב.
 
-כשיש שם (או "ללא שם") + כתובת + תיאור — הצג סיכום ובקש אישור:
+כתובת — וודא שהכתובת הגיונית:
+- חייבת לכלול שם רחוב + מספר בית + עיר/יישוב
+- אם הלקוח נתן רק עיר בלי רחוב, או רק רחוב בלי עיר — שאל להשלמת הפרט החסר
+- אם הכתובת נראית לא הגיונית (כמו "פה", "בבית", "ליד הים") — בקש כתובת מדויקת
+
+כשיש שם (או "ללא שם") + כתובת מלאה + תיאור — הצג סיכום ובקש אישור:
 "סיכום: [שם], [כתובת], [תיאור]. נכון?"
 
 אחרי אישור — JSON בדיוק:
@@ -777,11 +782,6 @@ def do_open_wizenet(call_data, emails, client_phone):
             go_group = notify_to_group_state
         save_data()
 
-        # הודעה ללקוח/בוס עם מספר קריאה
-        msg_client = "✅ קריאה נפתחה בויזנט — מספר קריאה: #" + str(wid)
-        send_message(client_phone, msg_client)
-        add_to_history(client_phone, "bot", msg_client)
-
         # הודעה למורן/קבוצה עם כל הפרטים + מספר ויזנט
         name = call_data.get("name", "-")
         notify_msg = "\n".join([
@@ -854,6 +854,72 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         is_yes = any(x in answer_lower for x in ["כן", "yes", "נכון", "אישור", "אשר", "ok"])
         is_no  = any(x in answer_lower for x in ["לא", "no", "שגוי", "לא נכון", "טעות"])
 
+        # לקוח נתן פרטים חדשים לחיפוש חוזר
+        if pending.get("awaiting_retry_info") and not is_yes and not is_no and len(answer) >= 2:
+            call_data = pending["call_data"]
+            retry_count = pending.get("retry_count", 1)
+            new_info = answer.strip()
+            results = []
+
+            if validate_il_phone(normalize_il_phone(new_info)):
+                client = get_wizenet_client_by_phone(normalize_il_phone(new_info))
+                if client:
+                    results = [client]
+            if not results:
+                city, street = extract_city_and_street(new_info)
+                results = get_wizenet_client_by_name(new_info, city=city)
+                if not results and street and city:
+                    results = _wizenet_search(ccompany=street, ccity=city)
+                if not results and city:
+                    results = _wizenet_search(ccity=city)
+                if not results:
+                    results = _wizenet_search(ccompany=new_info)
+
+            if len(results) == 1:
+                wiz_name = results[0]["name"]
+                call_data["_wizenet_cid"] = results[0]["cid"]
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data, "emails": pending.get("emails", []),
+                        "client_phone": pending.get("client_phone", phone),
+                        "wiz_name": wiz_name, "retry_count": retry_count
+                    }
+                return f"מצאתי: *{wiz_name}* — זה הכרטיס הנכון? (כן / לא)"
+            elif len(results) > 1:
+                options = "\n".join([str(i+1) + ". " + r["name"] for i, r in enumerate(results[:5])])
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data, "emails": pending.get("emails", []),
+                        "client_phone": pending.get("client_phone", phone),
+                        "wiz_options": results[:5], "retry_count": retry_count
+                    }
+                return f"מצאתי כמה אפשרויות:\n{options}\n\nאיזה מספר נכון? או 'לא' אם אף אחד"
+            else:
+                if retry_count < 2:
+                    with state_lock:
+                        pending_wizenet_confirm[phone] = {
+                            "call_data": call_data, "emails": pending.get("emails", []),
+                            "client_phone": pending.get("client_phone", phone),
+                            "awaiting_retry_info": True, "retry_count": retry_count + 1
+                        }
+                    return "לא מצאתי... ננסה עוד פעם — יש שם אחר או מספר טלפון שרשום על הכרטיס?"
+                else:
+                    with state_lock:
+                        pending_wizenet_confirm.pop(phone, None)
+                        _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                    notify_manual = (
+                        "⚠️ *לקוח לא זוהה בויזנט*\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "👤 *שם:* " + call_data.get("name","-") + "\n"
+                        "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
+                        "📝 *תיאור:* " + call_data.get("description","-") + "\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
+                    )
+                    send_message(_notify_phone, notify_manual)
+                    add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
+                    return "מצטער, לא הצלחתי למצוא את הכרטיס. הפנייה נרשמה ונציג יצור איתך קשר בהקדם 🙂"
+
         # בחירה מרשימה (1-5)
         wiz_options = pending.get("wiz_options")
         if wiz_options and answer.isdigit():
@@ -889,23 +955,39 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             return "✅ מעולה, פותח את הקריאה על הכרטיס הנכון!"
 
         elif is_no:
-            with state_lock:
-                pending_wizenet_confirm.pop(phone, None)
             call_data = pending["call_data"]
-            with state_lock:
-                _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
-            notify_manual = (
-                "⚠️ *לקוח לא זוהה בויזנט*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "👤 *שם:* " + call_data.get("name","-") + "\n"
-                "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
-                "📝 *תיאור:* " + call_data.get("description","-") + "\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
-            )
-            send_message(_notify_phone, notify_manual)
-            add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
-            return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. הפנייה נרשמה אצלנו ונציג יצור איתך קשר בהקדם 🙂"
+            retry_count = pending.get("retry_count", 0)
+
+            if retry_count < 2:
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data,
+                        "emails": pending.get("emails", []),
+                        "client_phone": pending.get("client_phone", phone),
+                        "awaiting_retry_info": True,
+                        "retry_count": retry_count + 1
+                    }
+                if retry_count == 0:
+                    return "לא נורא! אפשר לנסות שוב — מה השם המלא שרשום על הבריכה? או הכתובת המדויקת?"
+                else:
+                    return "ננסה פעם אחרונה — יש מספר טלפון אחר שרשום על הכרטיס? או שם אחר?"
+            else:
+                with state_lock:
+                    pending_wizenet_confirm.pop(phone, None)
+                with state_lock:
+                    _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                notify_manual = (
+                    "⚠️ *לקוח לא זוהה בויזנט*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "👤 *שם:* " + call_data.get("name","-") + "\n"
+                    "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
+                    "📝 *תיאור:* " + call_data.get("description","-") + "\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
+                )
+                send_message(_notify_phone, notify_manual)
+                add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
+                return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. הפנייה נרשמה אצלנו ונציג יצור איתך קשר בהקדם 🙂"
 
         # לא הבין
         if wiz_options:
@@ -942,22 +1024,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             })
             reset_session(phone)
 
-        # ניתוב הודעה
-        notify_msg = build_notify_message(phone, result)
-        with state_lock:
-            go_group = notify_to_group_state
-            _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
-            _notify_group = runtime_settings.get("notify_group_id", NOTIFY_GROUP_ID)
-
-        if go_group:
-            print(f"[Notify] → קבוצה {_notify_group}", flush=True)
-            ok = send_message(_notify_group, notify_msg)
-            print(f"[Notify] קבוצה ok={ok}", flush=True)
-        else:
-            print(f"[Notify] → אישי {_notify_phone}", flush=True)
-            ok = send_message(_notify_phone, notify_msg)
-            print(f"[Notify] אישי ok={ok}", flush=True)
-
+        # ההתראה תישלח מ-_background_tasks/do_open_wizenet — לא שולחים כאן כדי למנוע כפילות
         save_data()
         _call_copy = service_calls[-1].copy()
 
@@ -973,12 +1040,17 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             call_data["contact_phone"] = contact_phone
             client_name = call_data.get("name", "").strip()
 
-            # שלב 1 — חפש לפי טלפון
+            # שלב 1 — חפש לפי טלפון (טלפון שהלקוח נתן + טלפון וואטסאפ)
             client_info = None
             if validate_il_phone(contact_phone):
                 client_info = get_wizenet_client_by_phone(contact_phone)
                 if client_info:
-                    print(f"[Wizenet] נמצא לפי טלפון: {client_info['name']}", flush=True)
+                    print(f"[Wizenet] נמצא לפי טלפון קשר: {client_info['name']}", flush=True)
+            whatsapp_phone = normalize_il_phone(client_phone)
+            if not client_info and whatsapp_phone != contact_phone and validate_il_phone(whatsapp_phone):
+                client_info = get_wizenet_client_by_phone(whatsapp_phone)
+                if client_info:
+                    print(f"[Wizenet] נמצא לפי טלפון וואטסאפ: {client_info['name']}", flush=True)
 
             # שלב 2 — אם לא נמצא לפי טלפון, חפש לפי שם + עיר
             address = call_data.get("address", "")
@@ -988,6 +1060,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             real_name = client_name and client_name.strip().lower() not in {n.lower() for n in _FAKE_NAMES}
             if not client_info and real_name:
                 results = get_wizenet_client_by_name(client_name, city=city)
+                if not results and city:
+                    results = get_wizenet_client_by_name(client_name, city="")
+                    if results:
+                        print(f"[Wizenet] חיפוש שם ללא עיר → {len(results)} תוצאות", flush=True)
                 if len(results) == 1:
                     client_info = results[0]
                     print(f"[Wizenet] נמצא לפי שם: {client_info['name']}", flush=True)
@@ -1082,10 +1158,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     "נא לשייך את הקריאה לכרטיס הנכון בויזנט." + call_num_str
                 )
                 send_message(_notify_phone, notify_msg)
-                if not is_boss_phone(client_phone):
-                    client_msg = f"✅ הפנייה נרשמה בהצלחה{call_num_str}\nנציג יצור איתך קשר בהקדם 🙂"
-                    send_message(client_phone, client_msg)
-                    add_to_history(client_phone, "bot", client_msg)
 
         threading.Thread(target=_background_tasks, args=(_call_copy, _emails, _client_phone), daemon=True).start()
 
@@ -1522,17 +1594,41 @@ def api_toggle(phone):
     save_data(sync_firestore=True)
 
     if need_greeting:
-        def _send_greet():
-            greet = f"{get_greeting()}! איך אפשר לעזור?"
-            sent = send_message(phone, greet)
-            if sent:
-                with state_lock:
-                    greeting_sent[phone] = True
-                cancel_reminder(phone)  # בטל תזכורות ישנות
-                add_to_history(phone, "bot", greet)
-                save_data()
-            print(f"[Toggle] ברכה {'נשלחה' if sent else 'נכשלה'} ל-{phone}", flush=True)
-        threading.Thread(target=_send_greet, daemon=True).start()
+        def _send_greet_or_reply():
+            with state_lock:
+                history = list(chat_history.get(phone, []))
+            last_client_msg = None
+            last_client_type = "text"
+            for h in reversed(history):
+                if h.get("sender") == "client":
+                    last_client_msg = h.get("message", "")
+                    last_client_type = h.get("type", "text")
+                    break
+
+            if last_client_msg and last_client_msg not in ("[התקשר בשיחת וואטסאפ]",):
+                print(f"[Toggle] לקוח כבר כתב — מעבד הודעה קיימת: {last_client_msg[:60]}", flush=True)
+                try:
+                    reply = handle_message(phone, last_client_msg, last_client_type)
+                except Exception as e:
+                    print(f"[Toggle] handle_message error: {e}", flush=True)
+                    reply = f"{get_greeting()}! איך אפשר לעזור?"
+                if reply:
+                    with state_lock:
+                        greeting_sent[phone] = True
+                    add_to_history(phone, "bot", reply)
+                    send_message(phone, reply)
+                    save_data()
+            else:
+                greet = f"{get_greeting()}! איך אפשר לעזור?"
+                sent = send_message(phone, greet)
+                if sent:
+                    with state_lock:
+                        greeting_sent[phone] = True
+                    cancel_reminder(phone)
+                    add_to_history(phone, "bot", greet)
+                    save_data()
+            print(f"[Toggle] תגובה נשלחה ל-{phone}", flush=True)
+        threading.Thread(target=_send_greet_or_reply, daemon=True).start()
 
     return jsonify({"phone": phone, "bot_active": True})
 
@@ -1552,18 +1648,44 @@ def api_add_contact():
 
 @app.route("/api/send-greeting/<path:phone>", methods=["POST"])
 def api_send_greeting(phone):
-    """שלח הודעת פתיחה מחדש — גם אם כבר נשלחה בעבר"""
-    greet = f"{get_greeting()}! איך אפשר לעזור?"
-    sent = send_message(phone, greet)
-    if sent:
-        with state_lock:
-            greeting_sent[phone] = True
-            bot_enabled[phone] = True
-            sessions[phone] = {"step": "active", "data": {}}
-        cancel_reminder(phone)  # בטל תזכורות ישנות — לא לשלוח ברכה מיושנת
-        add_to_history(phone, "bot", greet)
-        save_data()
-    return jsonify({"ok": sent})
+    """שלח הודעת פתיחה — אם הלקוח כבר כתב, ענה על ההודעה שלו"""
+    with state_lock:
+        bot_enabled[phone] = True
+        sessions[phone] = {"step": "active", "data": {}}
+        history = list(chat_history.get(phone, []))
+
+    last_client_msg = None
+    last_client_type = "text"
+    for h in reversed(history):
+        if h.get("sender") == "client":
+            last_client_msg = h.get("message", "")
+            last_client_type = h.get("type", "text")
+            break
+
+    if last_client_msg and last_client_msg not in ("[התקשר בשיחת וואטסאפ]",):
+        def _reply():
+            try:
+                reply = handle_message(phone, last_client_msg, last_client_type)
+            except Exception as e:
+                print(f"[Greeting] handle_message error: {e}", flush=True)
+                reply = f"{get_greeting()}! איך אפשר לעזור?"
+            if reply:
+                with state_lock:
+                    greeting_sent[phone] = True
+                add_to_history(phone, "bot", reply)
+                send_message(phone, reply)
+                save_data()
+        threading.Thread(target=_reply, daemon=True).start()
+    else:
+        greet = f"{get_greeting()}! איך אפשר לעזור?"
+        sent = send_message(phone, greet)
+        if sent:
+            with state_lock:
+                greeting_sent[phone] = True
+            cancel_reminder(phone)
+            add_to_history(phone, "bot", greet)
+            save_data()
+    return jsonify({"ok": True})
 
 @app.route("/api/resend-last/<path:phone>", methods=["POST"])
 def api_resend_last(phone):
