@@ -1300,6 +1300,22 @@ h2{margin-bottom:18px;font-size:20px}</style></head>
 def health_check():
     return jsonify({"ok": True})
 
+@app.route("/api/test-claude")
+def api_test_claude():
+    start = time.time()
+    try:
+        resp = requests.post(
+            CLAUDE_API_URL,
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={"model": CLAUDE_MODEL, "max_tokens": 10, "messages": [{"role": "user", "content": "say hi"}]},
+            timeout=(10, 30)
+        )
+        elapsed = round(time.time() - start, 2)
+        return jsonify({"status": resp.status_code, "elapsed_sec": elapsed, "body": resp.text[:300]})
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        return jsonify({"error": str(e), "elapsed_sec": elapsed})
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     if not AUTH_CONFIGURED:
