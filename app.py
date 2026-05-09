@@ -1302,19 +1302,36 @@ def health_check():
 
 @app.route("/api/test-claude")
 def api_test_claude():
+    payload = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 10,
+        "system": BOSS_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": "שלום"}]
+    }
+    headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+
+    # בדיקה ישירה
     start = time.time()
     try:
-        resp = requests.post(
-            CLAUDE_API_URL,
-            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": CLAUDE_MODEL, "max_tokens": 10, "messages": [{"role": "user", "content": "say hi"}]},
-            timeout=(10, 30)
-        )
-        elapsed = round(time.time() - start, 2)
-        return jsonify({"status": resp.status_code, "elapsed_sec": elapsed, "body": resp.text[:300]})
+        resp = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
+        direct = {"status": resp.status_code, "elapsed": round(time.time() - start, 2)}
     except Exception as e:
-        elapsed = round(time.time() - start, 2)
-        return jsonify({"error": str(e), "elapsed_sec": elapsed})
+        direct = {"error": str(e), "elapsed": round(time.time() - start, 2)}
+
+    # בדיקה מתוך thread
+    thread_result = [None]
+    def _bg():
+        s = time.time()
+        try:
+            r = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
+            thread_result[0] = {"status": r.status_code, "elapsed": round(time.time() - s, 2)}
+        except Exception as e:
+            thread_result[0] = {"error": str(e), "elapsed": round(time.time() - s, 2)}
+    t = threading.Thread(target=_bg, daemon=True)
+    t.start()
+    t.join(timeout=35)
+
+    return jsonify({"direct": direct, "thread": thread_result[0]})
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
@@ -1524,30 +1541,30 @@ def api_toggle(phone):
     with state_lock:
         bot_enabled[phone] = not bot_enabled.get(phone, False)
         now_active = bot_enabled[phone]
-        need_greeting = now_active and not greeting_sent.get(phone, False)
 
     if not now_active:
         cancel_reminder(phone)
         save_data(sync_firestore=True)
         return jsonify({"phone": phone, "bot_active": False})
 
-    # הפעלה — שמור מיד ושלח ברכה ב-thread נפרד
+    # הפעלה — אפס היסטוריה וסשן, ושלח ברכה ב-thread נפרד
     with state_lock:
-        sessions.setdefault(phone, {"step": "active", "data": {}})
+        chat_history[phone] = []
+        sessions[phone] = {"step": "active", "data": {}}
+        greeting_sent.pop(phone, None)
+        pending_wizenet_confirm.pop(phone, None)
     save_data(sync_firestore=True)
 
-    if need_greeting:
-        def _send_greet():
-            greet = f"{get_greeting()}! איך אפשר לעזור?"
-            sent = send_message(phone, greet)
-            if sent:
-                with state_lock:
-                    greeting_sent[phone] = True
-                cancel_reminder(phone)  # בטל תזכורות ישנות
-                add_to_history(phone, "bot", greet)
-                save_data()
-            print(f"[Toggle] ברכה {'נשלחה' if sent else 'נכשלה'} ל-{phone}", flush=True)
-        threading.Thread(target=_send_greet, daemon=True).start()
+    def _send_greet():
+        greet = f"{get_greeting()}! איך אפשר לעזור?"
+        sent = send_message(phone, greet)
+        if sent:
+            with state_lock:
+                greeting_sent[phone] = True
+            add_to_history(phone, "bot", greet)
+            save_data()
+        print(f"[Toggle] ברכה {'נשלחה' if sent else 'נכשלה'} ל-{phone}", flush=True)
+    threading.Thread(target=_send_greet, daemon=True).start()
 
     return jsonify({"phone": phone, "bot_active": True})
 
