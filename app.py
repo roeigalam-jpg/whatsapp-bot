@@ -640,21 +640,22 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
 
             system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
             print(f"[Claude] sending {len(messages)} messages to API...", flush=True)
-            resp = requests.post(
-                CLAUDE_API_URL,
-                headers={
+            with requests.Session() as _sess:
+                _sess.headers.update({
                     "Content-Type": "application/json",
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01"
-                },
-                json={
-                    "model": CLAUDE_MODEL,
-                    "max_tokens": 800 if is_boss else 450,
-                    "system": system,
-                    "messages": messages
-                },
-                timeout=(10, 30)
-            )
+                })
+                resp = _sess.post(
+                    CLAUDE_API_URL,
+                    json={
+                        "model": CLAUDE_MODEL,
+                        "max_tokens": 800 if is_boss else 450,
+                        "system": system,
+                        "messages": messages
+                    },
+                    timeout=(10, 30)
+                )
             print(f"[Claude] status={resp.status_code} attempt={attempt}", flush=True)
             data = resp.json()
             if "content" not in data:
@@ -1323,7 +1324,8 @@ def api_test_claude():
     def _bg():
         s = time.time()
         try:
-            r = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
+            with requests.Session() as _s:
+                r = _s.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
             thread_result[0] = {"status": r.status_code, "elapsed": round(time.time() - s, 2)}
         except Exception as e:
             thread_result[0] = {"error": str(e), "elapsed": round(time.time() - s, 2)}
