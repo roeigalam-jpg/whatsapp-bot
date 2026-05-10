@@ -861,6 +861,83 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         is_yes = any(x in answer_lower for x in ["כן", "yes", "נכון", "אישור", "אשר", "ok"])
         is_no  = any(x in answer_lower for x in ["לא", "no", "שגוי", "לא נכון", "טעות"])
 
+        # בוס נתן פרטים נוספים אחרי שלא נמצא לקוח
+        if pending.get("awaiting_details"):
+            import re as _re
+            call_data = pending["call_data"]
+            emails    = pending["emails"]
+            client_name = call_data.get("name", "")
+
+            # ציאת "לא" / לא רוצה לחפש
+            if is_no or any(x in answer_lower for x in ["אין", "ללא", "לא יודע", "פתח ידנית"]):
+                with state_lock:
+                    pending_wizenet_confirm.pop(phone, None)
+                call_data["cid_confirmed"] = "-1"
+                threading.Thread(target=do_open_wizenet, args=(call_data, emails, phone), daemon=True).start()
+                reset_session(phone)
+                add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
+                return "פותח קריאה ידנית ✅"
+
+            # חלץ טלפון ועיר מהתשובה
+            phone_match = _re.search(r"0[5-9]\d{8}", answer.replace("-","").replace(" ",""))
+            found_phone = phone_match.group() if phone_match else None
+            city_from_answer, _ = extract_city_and_street(answer)
+
+            # שלב עם נתונים קיימים מה-call_data
+            existing_city, _ = extract_city_and_street(call_data.get("address",""))
+            city = city_from_answer or existing_city
+            if found_phone:
+                call_data["contact_phone"] = found_phone
+
+            # חיפוש משולב — כל השילובים
+            results = []
+            seen_cids = set()
+
+            def _add(lst):
+                for r in (lst if isinstance(lst, list) else ([lst] if lst else [])):
+                    if r and r.get("cid") not in seen_cids:
+                        seen_cids.add(r["cid"])
+                        results.append(r)
+
+            if found_phone:
+                _add(get_wizenet_client_by_phone(found_phone))
+            if not results and client_name:
+                _add(get_wizenet_client_by_name(client_name, city=city))
+            if not results and city:
+                _add(_wizenet_search(ccity=city))
+
+            with state_lock:
+                pending_wizenet_confirm.pop(phone, None)
+
+            if len(results) == 1:
+                call_data["_wizenet_cid"] = results[0]["cid"]
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data, "emails": emails,
+                        "client_phone": phone, "wiz_name": results[0]["name"]
+                    }
+                confirm_msg = f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
+                add_to_history(phone, "bot", confirm_msg)
+                return confirm_msg
+            elif len(results) > 1:
+                options_str = "\n".join([f"{i+1}. {r['name']}" + (f" ({r['city']})" if r.get('city') else "") for i, r in enumerate(results[:5])])
+                confirm_msg = f"מצאתי כמה לקוחות:\n{options_str}\n\nאיזה מספר נכון? או 'לא'"
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data, "emails": emails,
+                        "client_phone": phone, "wiz_options": results[:5]
+                    }
+                add_to_history(phone, "bot", confirm_msg)
+                return confirm_msg
+            else:
+                # לא נמצא בכלל — שאל שוב או פתח ידנית
+                with state_lock:
+                    pending_wizenet_confirm[phone] = {
+                        "call_data": call_data, "emails": emails,
+                        "client_phone": phone, "awaiting_details": True
+                    }
+                return "לא מצאתי 🔍 נסה טלפון אחר / עיר, או כתוב 'לא' לפתיחה ידנית"
+
         # בחירה מרשימה (1-5)
         wiz_options = pending.get("wiz_options")
         if wiz_options and answer.isdigit():
@@ -1055,26 +1132,38 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 send_message(client_phone, confirm_msg)
                 add_to_history(client_phone, "bot", confirm_msg)
             else:
-                # לא נמצא לקוח אחרי כל הניסיונות — פותחים קריאה ידנית בויזנט עם cid=-1
-                with state_lock:
-                    _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
-                print(f"[Wizenet] לא נמצא לקוח — פותח קריאה ידנית עם cid=-1", flush=True)
-                call_data["cid_confirmed"] = "-1"
-                wiz_result = open_wizenet_call(call_data)
-                call_num = str(wiz_result) if wiz_result else ""
-                call_num_str = f" — מספר קריאה: #{call_num}" if call_num else ""
-                notify_msg = (
-                    "⚠️ *לקוח לא זוהה — קריאה נפתחה ידנית*\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "👤 *שם:* " + call_data.get("name", "-") + "\n"
-                    "📞 *טלפון:* " + call_data.get("contact_phone", "-") + "\n"
-                    "📍 *כתובת:* " + call_data.get("address", "-") + "\n"
-                    "📝 *תיאור:* " + call_data.get("description", "-") + "\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "נא לשייך את הקריאה לכרטיס הנכון בויזנט." + call_num_str
-                )
-                send_message(_notify_phone, notify_msg)
-                if not is_boss_phone(client_phone):
+                # לא נמצא לקוח אחרי כל הניסיונות
+                print(f"[Wizenet] לא נמצא לקוח cid=-1", flush=True)
+                if is_boss_phone(client_phone):
+                    # שאל את הבוס לפרטים נוספים במקום לפתוח CID=-1
+                    with state_lock:
+                        if client_phone not in pending_wizenet_confirm:
+                            pending_wizenet_confirm[client_phone] = {
+                                "call_data": call_data, "emails": emails,
+                                "client_phone": client_phone, "awaiting_details": True
+                            }
+                    ask_msg = f"🔍 לא מצאתי לקוח בשם *{client_name}* בויזנט.\nיש לך טלפון או כתובת שלו?"
+                    send_message(client_phone, ask_msg)
+                    add_to_history(client_phone, "bot", ask_msg)
+                else:
+                    # לקוח רגיל — שלח הודעה ידנית
+                    with state_lock:
+                        _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                    call_data["cid_confirmed"] = "-1"
+                    wiz_result = open_wizenet_call(call_data)
+                    call_num = str(wiz_result) if wiz_result else ""
+                    call_num_str = f" — מספר קריאה: #{call_num}" if call_num else ""
+                    notify_msg = (
+                        "⚠️ *לקוח לא זוהה — קריאה נפתחה ידנית*\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "👤 *שם:* " + call_data.get("name", "-") + "\n"
+                        "📞 *טלפון:* " + call_data.get("contact_phone", "-") + "\n"
+                        "📍 *כתובת:* " + call_data.get("address", "-") + "\n"
+                        "📝 *תיאור:* " + call_data.get("description", "-") + "\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "נא לשייך את הקריאה לכרטיס הנכון בויזנט." + call_num_str
+                    )
+                    send_message(_notify_phone, notify_msg)
                     client_msg = f"✅ הפנייה נרשמה בהצלחה{call_num_str}\nנציג יצור איתך קשר בהקדם 🙂"
                     send_message(client_phone, client_msg)
                     add_to_history(client_phone, "bot", client_msg)
@@ -1731,15 +1820,19 @@ def _wizenet_search(ccell="", ccompany="", ccity=""):
     if not payload:
         return []
     try:
-        r = requests.post(
+        _wiz_raw = json.dumps(payload).encode("utf-8")
+        _wiz_req = _urllib_request.Request(
             f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            headers=_wizenet_headers(),
-            json=payload,
-            timeout=10
+            data=_wiz_raw,
+            headers={**_wizenet_headers(), "Content-Type": "application/json"},
+            method="POST"
         )
-        print(f"[Wizenet/Search] payload={payload} status={r.status_code} response={r.text[:300]}", flush=True)
-        if r.status_code == 200 and r.text.strip().startswith("["):
-            data = r.json()
+        with _urllib_request.urlopen(_wiz_req, timeout=10) as _wiz_resp:
+            _wiz_text = _wiz_resp.read().decode("utf-8")
+            _wiz_status = _wiz_resp.status
+        print(f"[Wizenet/Search] payload={payload} status={_wiz_status} response={_wiz_text[:300]}", flush=True)
+        if _wiz_status == 200 and _wiz_text.strip().startswith("["):
+            data = json.loads(_wiz_text)
             _WIZ_PLACEHOLDER = {"לא פעיל", "ללא שם", "לא ידוע", "מפקח", "אנונימי",
                                  "אלמוני", "לא", "לא מוכר", "unknown", "-", "test", "בדיקה", "לא רלוונטי"}
             results = []
@@ -1830,15 +1923,19 @@ def open_wizenet_call(call_data):
         }
         if tech_name:
             payload["TechName"] = tech_name
-        r = requests.post(
+        _ow_raw = json.dumps(payload).encode("utf-8")
+        _ow_req = _urllib_request.Request(
             WIZENET_URL,
-            headers=_wizenet_headers(),
-            json=payload,
-            timeout=10
+            data=_ow_raw,
+            headers={**_wizenet_headers(), "Content-Type": "application/json"},
+            method="POST"
         )
-        print(f"[Wizenet] status={r.status_code} response={r.text[:300]}", flush=True)
-        if r.status_code == 200 and r.text.strip().startswith("["):
-            data = r.json()
+        with _urllib_request.urlopen(_ow_req, timeout=10) as _ow_resp:
+            _ow_text = _ow_resp.read().decode("utf-8")
+            _ow_status = _ow_resp.status
+        print(f"[Wizenet] status={_ow_status} response={_ow_text[:300]}", flush=True)
+        if _ow_status == 200 and _ow_text.strip().startswith("["):
+            data = json.loads(_ow_text)
             if isinstance(data, list) and data:
                 status = data[0].get("Status")
                 call_id = data[0].get("CALLID")
@@ -1848,7 +1945,7 @@ def open_wizenet_call(call_data):
                 else:
                     print(f"[Wizenet] ❌ שגיאה: {data[0].get('message')}", flush=True)
         else:
-            print(f"[Wizenet] HTTP {r.status_code}: {r.text[:200]}", flush=True)
+            print(f"[Wizenet] HTTP {_ow_status}: {_ow_text[:200]}", flush=True)
     except Exception as e:
         print(f"[Wizenet] exception: {e}", flush=True)
     return None
