@@ -561,10 +561,14 @@ def send_message(phone, text):
     try:
         url = f"{GREEN_API_URL}/sendMessage/{GREEN_API_TOKEN}"
         chat_id = phone if "@" in phone else f"{phone}@c.us"
-        r = requests.post(url, json={"chatId": chat_id, "message": text}, timeout=10)
-        ok = r.status_code == 200
+        _sm_raw = json.dumps({"chatId": chat_id, "message": text}).encode("utf-8")
+        _sm_req = _urllib_request.Request(url, data=_sm_raw,
+                                          headers={"Content-Type": "application/json"},
+                                          method="POST")
+        with _urllib_request.urlopen(_sm_req, timeout=10) as _sm_resp:
+            ok = _sm_resp.status == 200
         if not ok:
-            print(f"[GreenAPI] send failed: {r.status_code} {r.text[:100]}", flush=True)
+            print(f"[GreenAPI] send failed: {_sm_resp.status}", flush=True)
         return ok
     except Exception as e:
         print(f"[GreenAPI] error: {e}", flush=True)
@@ -741,30 +745,54 @@ def schedule_reminder(phone, last_msg):
         reminder_timers[phone + "_cancel"] = cancelled
     t1.start()
 
+def _build_multipart(fields, files):
+    boundary = ("Boundary" + base64.b64encode(os.urandom(12)).decode()).encode()
+    body = b""
+    for name, value in fields.items():
+        body += b"--" + boundary + b"\r\n"
+        body += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        body += value.encode() + b"\r\n"
+    for name, (filename, filedata, content_type) in files.items():
+        body += b"--" + boundary + b"\r\n"
+        body += f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
+        body += f"Content-Type: {content_type}\r\n\r\n".encode()
+        body += filedata + b"\r\n"
+    body += b"--" + boundary + b"--\r\n"
+    return body, b"multipart/form-data; boundary=" + boundary
+
 def transcribe_audio_groq(audio_url):
     """תמלול הקלטה קולית עם Groq Whisper — חינמי, תומך עברית"""
     if not GROQ_API_KEY:
         print("[Groq] חסר GROQ_API_KEY", flush=True)
         return None
     try:
-        r = requests.get(audio_url, timeout=15)
-        if r.status_code != 200:
-            print(f"[Groq] download failed: {r.status_code}", flush=True)
-            return None
-        # שלח ל-Groq Whisper
-        resp = requests.post(
-            GROQ_WHISPER_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            files={"file": ("audio.mp3", r.content, "audio/mpeg")},
-            data={"model": "whisper-large-v3", "language": "he", "response_format": "text", "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"},
-            timeout=30
+        # הורד את הקובץ
+        _dl_req = _urllib_request.Request(audio_url)
+        with _urllib_request.urlopen(_dl_req, timeout=15) as _dl_resp:
+            if _dl_resp.status != 200:
+                print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
+                return None
+            audio_data = _dl_resp.read()
+        # שלח ל-Groq Whisper כ-multipart
+        _body, _ct = _build_multipart(
+            fields={
+                "model": "whisper-large-v3",
+                "language": "he",
+                "response_format": "text",
+                "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
+            },
+            files={"file": ("audio.mp3", audio_data, "audio/mpeg")}
         )
-        if resp.status_code == 200:
-            text = resp.text.strip()
-            print(f"[Groq] transcribed: {text[:60]}", flush=True)
-            return text
-        print(f"[Groq] error: {resp.status_code} {resp.text[:100]}", flush=True)
-        return None
+        _gr_req = _urllib_request.Request(
+            GROQ_WHISPER_URL,
+            data=_body,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode()},
+            method="POST"
+        )
+        with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
+            text = _gr_resp.read().decode("utf-8").strip()
+        print(f"[Groq] transcribed: {text[:60]}", flush=True)
+        return text
     except Exception as e:
         print(f"[Groq] exception: {e}", flush=True)
         return None
@@ -1786,13 +1814,15 @@ def send_email_notification(call_data, emails):
     <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">🕐 נפתח</td><td style="padding:8px">{call_data.get('opened_at','-')}</td></tr>
   </table>
 </div>"""
-        r = requests.post(
+        _rs_raw = json.dumps({"from": RESEND_FROM, "to": emails, "subject": subject, "html": body}).encode("utf-8")
+        _rs_req = _urllib_request.Request(
             "https://api.resend.com/emails",
+            data=_rs_raw,
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json={"from": RESEND_FROM, "to": emails, "subject": subject, "html": body},
-            timeout=10
+            method="POST"
         )
-        print(f"[Resend] status={r.status_code}", flush=True)
+        with _urllib_request.urlopen(_rs_req, timeout=10) as _rs_resp:
+            print(f"[Resend] status={_rs_resp.status}", flush=True)
     except Exception as e:
         print(f"[Resend] error: {e}", flush=True)
 
@@ -1964,7 +1994,10 @@ def fire_webhook(call_data):
                 if ":" in line:
                     k,v = line.split(":",1)
                     headers[k.strip()] = v.strip()
-        requests.post(url, json=call_data, headers=headers, timeout=8)
+        _fw_raw = json.dumps(call_data).encode("utf-8")
+        _fw_req = _urllib_request.Request(url, data=_fw_raw, headers=headers, method="POST")
+        with _urllib_request.urlopen(_fw_req, timeout=8) as _:
+            pass
         print(f"[Webhook] fired to {url}", flush=True)
     except Exception as e:
         print(f"[Webhook] error: {e}", flush=True)
