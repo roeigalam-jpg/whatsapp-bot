@@ -3,6 +3,8 @@ from datetime import datetime, timezone, timedelta
 import base64
 import hashlib
 import hmac
+import urllib.request as _urllib_request
+import urllib.error as _urllib_error
 import requests
 import json
 import threading
@@ -640,24 +642,26 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
 
             system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
             print(f"[Claude] sending {len(messages)} messages to API...", flush=True)
-            with requests.Session() as _sess:
-                _sess.headers.update({
+            _payload = json.dumps({
+                "model": CLAUDE_MODEL,
+                "max_tokens": 800 if is_boss else 450,
+                "system": system,
+                "messages": messages
+            }).encode("utf-8")
+            _req = _urllib_request.Request(
+                CLAUDE_API_URL,
+                data=_payload,
+                headers={
                     "Content-Type": "application/json",
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01"
-                })
-                resp = _sess.post(
-                    CLAUDE_API_URL,
-                    json={
-                        "model": CLAUDE_MODEL,
-                        "max_tokens": 800 if is_boss else 450,
-                        "system": system,
-                        "messages": messages
-                    },
-                    timeout=(10, 30)
-                )
-            print(f"[Claude] status={resp.status_code} attempt={attempt}", flush=True)
-            data = resp.json()
+                },
+                method="POST"
+            )
+            with _urllib_request.urlopen(_req, timeout=30) as _resp:
+                _status = _resp.status
+                data = json.loads(_resp.read().decode("utf-8"))
+            print(f"[Claude] status={_status} attempt={attempt}", flush=True)
             if "content" not in data:
                 print(f"[Claude] error: {data}", flush=True)
                 if attempt == 0:
@@ -1311,11 +1315,14 @@ def api_test_claude():
     }
     headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
 
+    _raw = json.dumps(payload).encode("utf-8")
+
     # בדיקה ישירה
     start = time.time()
     try:
-        resp = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
-        direct = {"status": resp.status_code, "elapsed": round(time.time() - start, 2)}
+        _req = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
+        with _urllib_request.urlopen(_req, timeout=30) as _r:
+            direct = {"status": _r.status, "elapsed": round(time.time() - start, 2)}
     except Exception as e:
         direct = {"error": str(e), "elapsed": round(time.time() - start, 2)}
 
@@ -1324,9 +1331,9 @@ def api_test_claude():
     def _bg():
         s = time.time()
         try:
-            with requests.Session() as _s:
-                r = _s.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=(10, 30))
-            thread_result[0] = {"status": r.status_code, "elapsed": round(time.time() - s, 2)}
+            _req2 = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
+            with _urllib_request.urlopen(_req2, timeout=30) as _r2:
+                thread_result[0] = {"status": _r2.status, "elapsed": round(time.time() - s, 2)}
         except Exception as e:
             thread_result[0] = {"error": str(e), "elapsed": round(time.time() - s, 2)}
     t = threading.Thread(target=_bg, daemon=True)
