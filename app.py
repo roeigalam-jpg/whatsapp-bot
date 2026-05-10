@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
+﻿from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from datetime import datetime, timezone, timedelta
 import base64
 import hashlib
@@ -886,7 +886,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         answer = body.strip()
         answer_lower = answer.lower()
         is_yes = any(x in answer_lower for x in ["כן", "yes", "נכון", "אישור", "אשר", "ok"])
-        is_no  = any(x in answer_lower for x in ["לא", "no", "שגוי", "לא נכון", "טעות"])
+        is_no  = any(x in answer_lower for x in ["לא", "no", "שגוי", "לא נכון", "טעות", "תשכח", "עזוב", "בטל", "סגור", "לא חשוב", "לא רלוונטי", "ננסה", "skip"])
 
         # בוס נתן פרטים נוספים אחרי שלא נמצא לקוח
         if pending.get("awaiting_details"):
@@ -944,7 +944,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         "client_phone": phone, "wiz_name": results[0]["name"]
                     }
                 confirm_msg = f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
-                add_to_history(phone, "bot", confirm_msg)
                 return confirm_msg
             elif len(results) > 1:
                 options_str = "\n".join([f"{i+1}. {r['name']}" + (f" ({r['city']})" if r.get('city') else "") for i, r in enumerate(results[:5])])
@@ -954,7 +953,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "wiz_options": results[:5]
                     }
-                add_to_history(phone, "bot", confirm_msg)
                 return confirm_msg
             else:
                 # לא נמצא בכלל — שאל שוב או פתח ידנית
@@ -1003,20 +1001,29 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             with state_lock:
                 pending_wizenet_confirm.pop(phone, None)
             call_data = pending["call_data"]
-            with state_lock:
-                _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
-            notify_manual = (
-                "⚠️ *לקוח לא זוהה בויזנט*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "👤 *שם:* " + call_data.get("name","-") + "\n"
-                "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
-                "📝 *תיאור:* " + call_data.get("description","-") + "\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
-            )
-            send_message(_notify_phone, notify_manual)
-            add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
-            return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. הפנייה נרשמה אצלנו ונציג יצור איתך קשר בהקדם 🙂"
+            if is_boss:
+                # בוס — פתח עם CID=-1 ואפס שיחה
+                call_data["cid_confirmed"] = "-1"
+                threading.Thread(target=do_open_wizenet, args=(call_data, pending["emails"], pending["client_phone"]), daemon=True).start()
+                reset_session(phone)
+                add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
+                return "✅ פותח קריאה ידנית"
+            else:
+                # לקוח — שלח התראה ידנית
+                with state_lock:
+                    _notify_phone = runtime_settings.get("notify_personal_phone", NOTIFY_PERSONAL_PHONE)
+                notify_manual = (
+                    "⚠️ *לקוח לא זוהה בויזנט*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "👤 *שם:* " + call_data.get("name","-") + "\n"
+                    "📞 *טלפון:* " + call_data.get("contact_phone","-") + "\n"
+                    "📝 *תיאור:* " + call_data.get("description","-") + "\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "נא לאתר את הכרטיס ולפתוח קריאה ידנית."
+                )
+                send_message(_notify_phone, notify_manual)
+                add_to_history(phone, "bot", "[הפנייה נרשמה — ממתינה לטיפול ידני]", "text")
+                return "מצטער, לא הצלחתי למצוא את הכרטיס שלך. הפנייה נרשמה אצלנו ונציג יצור איתך קשר בהקדם 🙂"
 
         # לא הבין
         if wiz_options:
@@ -1102,7 +1109,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                             "client_phone": client_phone, "wiz_options": results[:5]
                         }
                     send_message(client_phone, confirm_msg)
-                    add_to_history(client_phone, "bot", confirm_msg)
                     return
 
             # שלב 3 — חפש לפי רחוב + עיר (שם רחוב כ-ccompany)
@@ -1123,7 +1129,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                             "client_phone": client_phone, "wiz_options": results[:5]
                         }
                     send_message(client_phone, confirm_msg)
-                    add_to_history(client_phone, "bot", confirm_msg)
                     return
 
             # שלב 4 — fallback: חפש לפי עיר בלבד
@@ -1144,7 +1149,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                             "client_phone": client_phone, "wiz_options": results[:5]
                         }
                     send_message(client_phone, confirm_msg)
-                    add_to_history(client_phone, "bot", confirm_msg)
                     return
 
             if client_info:
@@ -1161,7 +1165,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                     }
                 confirm_msg = "מצאתי לקוח: *" + wiz_name + "*\nזה הכרטיס הנכון? (כן / לא)"
                 send_message(client_phone, confirm_msg)
-                add_to_history(client_phone, "bot", confirm_msg)
             else:
                 # לא נמצא לקוח אחרי כל הניסיונות
                 print(f"[Wizenet] לא נמצא לקוח cid=-1", flush=True)
@@ -1175,7 +1178,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                             }
                     ask_msg = f"🔍 לא מצאתי לקוח בשם *{client_name}* בויזנט.\nיש לך טלפון או כתובת שלו?"
                     send_message(client_phone, ask_msg)
-                    add_to_history(client_phone, "bot", ask_msg)
                 else:
                     # לקוח רגיל — שלח הודעה ידנית
                     with state_lock:
