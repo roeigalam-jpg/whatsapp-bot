@@ -467,9 +467,8 @@ def build_system_prompt(phone=""):
 {{"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"...","tech_name":""}}
 
 call_type לפי הקשר:
-- תחזוקה/מים/תקלה/ניטור → "תחזוקה"
-- בנייה/פרויקט/אבזור → "פרויקט"
-- שיפוץ/חידוש → "שיפוץ"
+- פרויקט/אבזור/גמר → "פרויקטים"
+- בינוי/בנייה/שיפוץ/מים/תחזוקה/תקלה → "בינוי"
 - חשמל → "חשמל"
 
 ביטול: {{"action":"cancelled"}}
@@ -507,7 +506,7 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 פתיחת קריאה — מיד כשיש שם + תיאור:
 {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"-","tech_name":""}
 
-call_type: תחזוקה/מים/תקלה→"תחזוקה" | בנייה/פרויקט→"פרויקט" | שיפוץ→"שיפוץ" | חשמל→"חשמל"
+call_type: פרויקט/אבזור/גמר→"פרויקטים" | בינוי/בנייה/שיפוץ/מים/תחזוקה/תקלה→"בינוי" | חשמל→"חשמל"
 
 שליחת הודעה:
 {"action":"send_message","phone":"...","message":"..."}
@@ -1039,6 +1038,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             if phone_given and not validate_il_phone(contact_phone):
                 return "מספר הטלפון לא תקין. נא לספק מספר ישראלי (05X)."
 
+        _call_type_raw = (result.get("call_type") or "").strip()
+        _valid_types = {"פרויקטים", "בינוי", "חשמל"}
+        call_type_final = _call_type_raw if _call_type_raw in _valid_types else "בינוי"
+
         with state_lock:
             cancel_reminder(phone)
             call_id = len(service_calls) + 1
@@ -1047,7 +1050,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 "phone": phone,
                 "name": result.get("name", "-"),
                 "address": result.get("address", "-"),
-                "call_type": result.get("call_type", "-"),
+                "call_type": call_type_final,
                 "description": result.get("description", "-"),
                 "contact_phone": contact_phone,
                 "opened_at": il_now().strftime("%d/%m/%Y %H:%M"),
@@ -1916,17 +1919,13 @@ def get_wizenet_cid(contact_phone):
     return client["cid"] if client else "-1"
 
 def _call_type_to_id(call_type):
-    """המרת סוג קריאה למספר בויזנט"""
+    """המרת סוג קריאה למספר בויזנט — 18=פרויקטים, 20=בינוי, 23=חשמל"""
     ct = str(call_type).lower()
-    if any(x in ct for x in ["פרויקט", "בנייה", "אבזור", "בינוי", "גמר"]):
+    if any(x in ct for x in ["פרויקט", "אבזור", "גמר"]):
         return "18"
-    if any(x in ct for x in ["תחזוקה", "מים", "ניטור", "תקלה"]):
-        return "21"
     if any(x in ct for x in ["חשמל"]):
         return "23"
-    if any(x in ct for x in ["שיפוץ", "חידוש"]):
-        return "20"
-    return "21"  # ברירת מחדל — תחזוקה
+    return "20"  # ברירת מחדל — בינוי
 
 def open_wizenet_call(call_data):
     """פתיחת קריאה ב-Wizenet"""
