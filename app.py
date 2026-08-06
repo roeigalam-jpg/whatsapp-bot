@@ -775,12 +775,12 @@ def transcribe_audio_groq(audio_url):
         # שלח ל-Groq Whisper כ-multipart
         _body, _ct = _build_multipart(
             fields={
-                "model": "whisper-large-v3",
+                "model": "whisper-large-v3-turbo",
                 "language": "he",
                 "response_format": "text",
                 "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
             },
-            files={"file": ("audio.mp3", audio_data, "audio/mpeg")}
+            files={"file": ("audio.ogg", audio_data, "audio/ogg")}
         )
         _gr_req = _urllib_request.Request(
             GROQ_WHISPER_URL,
@@ -788,10 +788,15 @@ def transcribe_audio_groq(audio_url):
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode()},
             method="POST"
         )
-        with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
-            text = _gr_resp.read().decode("utf-8").strip()
-        print(f"[Groq] transcribed: {text[:60]}", flush=True)
-        return text
+        try:
+            with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
+                text = _gr_resp.read().decode("utf-8").strip()
+            print(f"[Groq] transcribed: {text[:60]}", flush=True)
+            return text
+        except _urllib_error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")[:300]
+            print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
+            return None
     except Exception as e:
         print(f"[Groq] exception: {e}", flush=True)
         return None
