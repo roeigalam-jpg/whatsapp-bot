@@ -765,38 +765,29 @@ def transcribe_audio_groq(audio_url):
         print("[Groq] חסר GROQ_API_KEY", flush=True)
         return None
     try:
-        # הורד את הקובץ
-        _dl_req = _urllib_request.Request(audio_url)
-        with _urllib_request.urlopen(_dl_req, timeout=15) as _dl_resp:
-            if _dl_resp.status != 200:
-                print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
-                return None
-            audio_data = _dl_resp.read()
-        # שלח ל-Groq Whisper כ-multipart
-        _body, _ct = _build_multipart(
-            fields={
+        dl_resp = requests.get(audio_url, timeout=15)
+        if dl_resp.status_code != 200:
+            print(f"[Groq] download failed: {dl_resp.status_code}", flush=True)
+            return None
+        audio_data = dl_resp.content
+        gr_resp = requests.post(
+            GROQ_WHISPER_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            files={"file": ("audio.ogg", audio_data, "audio/ogg")},
+            data={
                 "model": "whisper-large-v3-turbo",
                 "language": "he",
                 "response_format": "text",
                 "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
             },
-            files={"file": ("audio.ogg", audio_data, "audio/ogg")}
+            timeout=30
         )
-        _gr_req = _urllib_request.Request(
-            GROQ_WHISPER_URL,
-            data=_body,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode()},
-            method="POST"
-        )
-        try:
-            with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
-                text = _gr_resp.read().decode("utf-8").strip()
+        if gr_resp.status_code == 200:
+            text = gr_resp.text.strip()
             print(f"[Groq] transcribed: {text[:60]}", flush=True)
             return text
-        except _urllib_error.HTTPError as he:
-            err_body = he.read().decode("utf-8", errors="ignore")[:300]
-            print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
-            return None
+        print(f"[Groq] HTTP {gr_resp.status_code}: {gr_resp.text[:300]}", flush=True)
+        return None
     except Exception as e:
         print(f"[Groq] exception: {e}", flush=True)
         return None
