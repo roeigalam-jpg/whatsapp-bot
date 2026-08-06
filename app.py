@@ -3,8 +3,6 @@ from datetime import datetime, timezone, timedelta
 import base64
 import hashlib
 import hmac
-import urllib.request as _urllib_request
-import urllib.error as _urllib_error
 import requests
 import json
 import threading
@@ -570,14 +568,10 @@ def send_message(phone, text):
     try:
         url = f"{GREEN_API_URL}/sendMessage/{GREEN_API_TOKEN}"
         chat_id = phone if "@" in phone else f"{phone}@c.us"
-        _sm_raw = json.dumps({"chatId": chat_id, "message": text}).encode("utf-8")
-        _sm_req = _urllib_request.Request(url, data=_sm_raw,
-                                          headers={"Content-Type": "application/json"},
-                                          method="POST")
-        with _urllib_request.urlopen(_sm_req, timeout=10) as _sm_resp:
-            ok = _sm_resp.status == 200
+        sm_resp = requests.post(url, json={"chatId": chat_id, "message": text}, timeout=10)
+        ok = sm_resp.status_code == 200
         if not ok:
-            print(f"[GreenAPI] send failed: {_sm_resp.status}", flush=True)
+            print(f"[GreenAPI] send failed: {sm_resp.status_code}", flush=True)
         return ok
     except Exception as e:
         print(f"[GreenAPI] error: {e}", flush=True)
@@ -655,25 +649,23 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
 
             system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
             print(f"[Claude] sending {len(messages)} messages to API...", flush=True)
-            _payload = json.dumps({
+            _payload = {
                 "model": CLAUDE_MODEL,
                 "max_tokens": 800 if is_boss else 450,
                 "system": system,
                 "messages": messages
-            }).encode("utf-8")
-            _req = _urllib_request.Request(
+            }
+            _resp = requests.post(
                 CLAUDE_API_URL,
-                data=_payload,
+                json=_payload,
                 headers={
-                    "Content-Type": "application/json",
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01"
                 },
-                method="POST"
+                timeout=30
             )
-            with _urllib_request.urlopen(_req, timeout=30) as _resp:
-                _status = _resp.status
-                data = json.loads(_resp.read().decode("utf-8"))
+            _status = _resp.status_code
+            data = _resp.json()
             print(f"[Claude] status={_status} attempt={attempt}", flush=True)
             if "content" not in data:
                 print(f"[Claude] error: {data}", flush=True)
@@ -1468,14 +1460,11 @@ def api_test_claude():
     }
     headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
 
-    _raw = json.dumps(payload).encode("utf-8")
-
     # בדיקה ישירה
     start = time.time()
     try:
-        _req = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
-        with _urllib_request.urlopen(_req, timeout=30) as _r:
-            direct = {"status": _r.status, "elapsed": round(time.time() - start, 2)}
+        _r = requests.post(CLAUDE_API_URL, json=payload, headers=headers, timeout=30)
+        direct = {"status": _r.status_code, "elapsed": round(time.time() - start, 2)}
     except Exception as e:
         direct = {"error": str(e), "elapsed": round(time.time() - start, 2)}
 
@@ -1484,9 +1473,8 @@ def api_test_claude():
     def _bg():
         s = time.time()
         try:
-            _req2 = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
-            with _urllib_request.urlopen(_req2, timeout=30) as _r2:
-                thread_result[0] = {"status": _r2.status, "elapsed": round(time.time() - s, 2)}
+            _r2 = requests.post(CLAUDE_API_URL, json=payload, headers=headers, timeout=30)
+            thread_result[0] = {"status": _r2.status_code, "elapsed": round(time.time() - s, 2)}
         except Exception as e:
             thread_result[0] = {"error": str(e), "elapsed": round(time.time() - s, 2)}
     t = threading.Thread(target=_bg, daemon=True)
@@ -1850,15 +1838,13 @@ def send_email_notification(call_data, emails):
     <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">🕐 נפתח</td><td style="padding:8px">{call_data.get('opened_at','-')}</td></tr>
   </table>
 </div>"""
-        _rs_raw = json.dumps({"from": RESEND_FROM, "to": emails, "subject": subject, "html": body}).encode("utf-8")
-        _rs_req = _urllib_request.Request(
+        rs_resp = requests.post(
             "https://api.resend.com/emails",
-            data=_rs_raw,
-            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            method="POST"
+            json={"from": RESEND_FROM, "to": emails, "subject": subject, "html": body},
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            timeout=15
         )
-        with _urllib_request.urlopen(_rs_req, timeout=10) as _rs_resp:
-            print(f"[Resend] status={_rs_resp.status}", flush=True)
+        print(f"[Resend] status={rs_resp.status_code}", flush=True)
     except Exception as e:
         print(f"[Resend] error: {e}", flush=True)
 
@@ -1886,19 +1872,15 @@ def _wizenet_search(ccell="", ccompany="", ccity=""):
     if not payload:
         return []
     try:
-        _wiz_raw = json.dumps(payload).encode("utf-8")
-        _wiz_req = _urllib_request.Request(
+        resp = requests.post(
             f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            data=_wiz_raw,
-            headers={**_wizenet_headers(), "Content-Type": "application/json"},
-            method="POST"
+            json=payload,
+            headers=_wizenet_headers(),
+            timeout=15
         )
-        with _urllib_request.urlopen(_wiz_req, timeout=10) as _wiz_resp:
-            _wiz_text = _wiz_resp.read().decode("utf-8")
-            _wiz_status = _wiz_resp.status
-        print(f"[Wizenet/Search] payload={payload} status={_wiz_status} response={_wiz_text[:300]}", flush=True)
-        if _wiz_status == 200 and _wiz_text.strip().startswith("["):
-            data = json.loads(_wiz_text)
+        print(f"[Wizenet/Search] payload={payload} status={resp.status_code} response={resp.text[:300]}", flush=True)
+        if resp.status_code == 200 and resp.text.strip().startswith("["):
+            data = resp.json()
             _WIZ_PLACEHOLDER = {"לא פעיל", "ללא שם", "לא ידוע", "מפקח", "אנונימי",
                                  "אלמוני", "לא", "לא מוכר", "unknown", "-", "test", "בדיקה", "לא רלוונטי"}
             results = []
@@ -1985,19 +1967,15 @@ def open_wizenet_call(call_data):
         }
         if tech_name:
             payload["TechName"] = tech_name
-        _ow_raw = json.dumps(payload).encode("utf-8")
-        _ow_req = _urllib_request.Request(
+        resp = requests.post(
             WIZENET_URL,
-            data=_ow_raw,
-            headers={**_wizenet_headers(), "Content-Type": "application/json"},
-            method="POST"
+            json=payload,
+            headers=_wizenet_headers(),
+            timeout=15
         )
-        with _urllib_request.urlopen(_ow_req, timeout=10) as _ow_resp:
-            _ow_text = _ow_resp.read().decode("utf-8")
-            _ow_status = _ow_resp.status
-        print(f"[Wizenet] status={_ow_status} response={_ow_text[:300]}", flush=True)
-        if _ow_status == 200 and _ow_text.strip().startswith("["):
-            data = json.loads(_ow_text)
+        print(f"[Wizenet] status={resp.status_code} response={resp.text[:300]}", flush=True)
+        if resp.status_code == 200 and resp.text.strip().startswith("["):
+            data = resp.json()
             if isinstance(data, list) and data:
                 status = data[0].get("Status")
                 call_id = data[0].get("CALLID")
@@ -2007,7 +1985,7 @@ def open_wizenet_call(call_data):
                 else:
                     print(f"[Wizenet] ❌ שגיאה: {data[0].get('message')}", flush=True)
         else:
-            print(f"[Wizenet] HTTP {_ow_status}: {_ow_text[:200]}", flush=True)
+            print(f"[Wizenet] HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
     except Exception as e:
         print(f"[Wizenet] exception: {e}", flush=True)
     return None
@@ -2026,10 +2004,7 @@ def fire_webhook(call_data):
                 if ":" in line:
                     k,v = line.split(":",1)
                     headers[k.strip()] = v.strip()
-        _fw_raw = json.dumps(call_data).encode("utf-8")
-        _fw_req = _urllib_request.Request(url, data=_fw_raw, headers=headers, method="POST")
-        with _urllib_request.urlopen(_fw_req, timeout=8) as _:
-            pass
+        requests.post(url, json=call_data, headers=headers, timeout=8)
         print(f"[Webhook] fired to {url}", flush=True)
     except Exception as e:
         print(f"[Webhook] error: {e}", flush=True)
