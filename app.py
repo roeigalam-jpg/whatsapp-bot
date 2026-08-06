@@ -568,10 +568,12 @@ def send_message(phone, text):
     try:
         url = f"{GREEN_API_URL}/sendMessage/{GREEN_API_TOKEN}"
         chat_id = phone if "@" in phone else f"{phone}@c.us"
-        sm_resp = requests.post(url, json={"chatId": chat_id, "message": text}, timeout=10)
+        sm_resp = requests.post(url, json={"chatId": chat_id, "message": text}, timeout=15)
         ok = sm_resp.status_code == 200
-        if not ok:
-            print(f"[GreenAPI] send failed: {sm_resp.status_code}", flush=True)
+        if ok:
+            print(f"[GreenAPI] sent to {phone} ({len(text)} chars)", flush=True)
+        else:
+            print(f"[GreenAPI] send failed: {sm_resp.status_code} {sm_resp.text[:200]}", flush=True)
         return ok
     except Exception as e:
         print(f"[GreenAPI] error: {e}", flush=True)
@@ -655,6 +657,7 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                 "system": system,
                 "messages": messages
             }
+            print(f"[Claude] calling API... attempt={attempt}", flush=True)
             _resp = requests.post(
                 CLAUDE_API_URL,
                 json=_payload,
@@ -662,9 +665,10 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01"
                 },
-                timeout=30
+                timeout=(10, 90)
             )
             _status = _resp.status_code
+            print(f"[Claude] got response status={_status} len={len(_resp.text)}", flush=True)
             data = _resp.json()
             print(f"[Claude] status={_status} attempt={attempt}", flush=True)
             if "content" not in data:
