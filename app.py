@@ -275,6 +275,11 @@ _CITY_ALIASES = {
     'ר"ג': "רמת גן", "ר.ג": "רמת גן", "רמת-גן": "רמת גן",
     "חולון": "חולון", "בת-ים": "בת ים", 'ב"י': "בת ים",
     'ק"ש': "קריית שמונה", 'כ"ס': "כפר סבא",
+    "תל-מונד": "תל מונד", "בית-שמש": "בית שמש", "בית-שאן": "בית שאן",
+    "ראשל\"צ": "ראשון לציון", "ראשלצ": "ראשון לציון",
+    'ר"ה': "רמת השרון", "רמת-השרון": "רמת השרון",
+    "הוד-השרון": "הוד השרון", "ראש-העין": "ראש העין",
+    "מעלה-אדומים": "מעלה אדומים",
 }
 
 # ערים ישראליות עם שם של שתי מילים
@@ -286,6 +291,11 @@ _TWO_WORD_CITIES = {
     "באר שבע", "רמת השרון", "גבעתיים", "בני ברק", "כפר נהר",
     "מודיעין עילית", "ביתר עילית", "אלעד", "אור עקיבא", "יבנה",
     "נשר", "טירת כרמל", "קרית שמונה", "מעלות תרשיחא",
+    "תל מונד", "כפר קאסם", "כפר ברא", "גבעת זאב", "מעלה אדומים",
+    "כוכב יאיר", "צור יגאל", "צור הדסה", "גני תקווה", "שוהם",
+    "קרית אונו", "קרית גת", "קרית מלאכי", "קרית ביאליק",
+    "רמת ישי", "כפר תבור", "בית שאן", "בית שמש", "קרית טבעון",
+    "פרדס חנה", "פרדס כץ", "זכרון יעקב", "עין גנים",
 }
 
 def normalize_city(city):
@@ -891,7 +901,6 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             emails    = pending["emails"]
             client_name = call_data.get("name", "")
 
-            # ציאת "לא" / לא רוצה לחפש
             if is_no or any(x in answer_lower for x in ["אין", "ללא", "לא יודע", "פתח ידנית"]):
                 with state_lock:
                     pending_wizenet_confirm.pop(phone, None)
@@ -901,16 +910,23 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
                 return "פותח קריאה ידנית ✅"
 
-            # חלץ טלפון ועיר מהתשובה
+            # חלץ טלפון מהתשובה
             phone_match = _re.search(r"0[5-9]\d{8}", answer.replace("-","").replace(" ",""))
             found_phone = phone_match.group() if phone_match else None
-            city_from_answer, _ = extract_city_and_street(answer)
 
-            # שלב עם נתונים קיימים מה-call_data
-            existing_city, _ = extract_city_and_street(call_data.get("address",""))
+            # חלץ עיר מהתשובה ומהכתובת המקורית
+            city_from_answer, street_from_answer = extract_city_and_street(answer)
+            existing_city, existing_street = extract_city_and_street(call_data.get("address", ""))
             city = city_from_answer or existing_city
             if found_phone:
                 call_data["contact_phone"] = found_phone
+
+            # זהה אם הקלט החדש הוא שם (לא טלפון ולא כתובת ברורה)
+            answer_clean = answer.strip()
+            is_name_input = (not found_phone and not city_from_answer
+                            and len(answer_clean) >= 2
+                            and not any(c.isdigit() for c in answer_clean)
+                            and "כתובת" not in answer_lower and "תציע" not in answer_lower and "חפש" not in answer_lower)
 
             # חיפוש משולב — כל השילובים
             results = []
@@ -922,10 +938,32 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         seen_cids.add(r["cid"])
                         results.append(r)
 
+            # 1. טלפון
             if found_phone:
                 _add(get_wizenet_client_by_phone(found_phone))
-            if not results and client_name:
+
+            # 2. שם חדש שהבוס נתן
+            if not results and is_name_input:
+                _add(get_wizenet_client_by_name(answer_clean, city=city))
+
+            # 3. שם מקורי + עיר חדשה
+            if not results and client_name and city:
                 _add(get_wizenet_client_by_name(client_name, city=city))
+
+            # 4. כתובת מהקלט + כתובת מהקריאה — חפש לפי רחוב+עיר
+            search_street = street_from_answer or existing_street
+            search_city = city
+            if not results and search_street and search_city:
+                _add(_wizenet_search(ccompany=search_street, ccity=search_city))
+
+            # 5. בקשה לחפש לפי כתובת מהקריאה
+            if not results and any(x in answer_lower for x in ["כתובת", "תציע", "חפש"]):
+                if existing_street and existing_city:
+                    _add(_wizenet_search(ccompany=existing_street, ccity=existing_city))
+                if not results and existing_city:
+                    _add(_wizenet_search(ccity=existing_city))
+
+            # 6. fallback — עיר בלבד
             if not results and city:
                 _add(_wizenet_search(ccity=city))
 
@@ -939,25 +977,22 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "wiz_name": results[0]["name"]
                     }
-                confirm_msg = f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
-                return confirm_msg
+                return f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
             elif len(results) > 1:
                 options_str = "\n".join([f"{i+1}. {r['name']}" + (f" ({r['city']})" if r.get('city') else "") for i, r in enumerate(results[:5])])
-                confirm_msg = f"מצאתי כמה לקוחות:\n{options_str}\n\nאיזה מספר נכון? או 'לא'"
                 with state_lock:
                     pending_wizenet_confirm[phone] = {
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "wiz_options": results[:5]
                     }
-                return confirm_msg
+                return f"מצאתי כמה לקוחות:\n{options_str}\n\nאיזה מספר נכון? או 'לא'"
             else:
-                # לא נמצא בכלל — שאל שוב או פתח ידנית
                 with state_lock:
                     pending_wizenet_confirm[phone] = {
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "awaiting_details": True
                     }
-                return "לא מצאתי 🔍 נסה טלפון אחר / עיר, או כתוב 'לא' לפתיחה ידנית"
+                return "לא מצאתי 🔍 נסה שם אחר / טלפון / עיר, או כתוב 'לא' לפתיחה ידנית"
 
         # בחירה מרשימה (1-5)
         wiz_options = pending.get("wiz_options")
