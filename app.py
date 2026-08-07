@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 import base64
 import hashlib
 import hmac
+import urllib.request as _urllib_request
 import requests
 import json
 import threading
@@ -651,25 +652,25 @@ def ask_claude(history, user_msg, msg_type="text", is_boss=False, phone=""):
 
             system = BOSS_SYSTEM_PROMPT if is_boss else build_system_prompt(phone)
             print(f"[Claude] sending {len(messages)} messages to API...", flush=True)
-            _payload = {
+            _payload = json.dumps({
                 "model": CLAUDE_MODEL,
                 "max_tokens": 800 if is_boss else 450,
                 "system": system,
                 "messages": messages
-            }
-            print(f"[Claude] calling API... attempt={attempt}", flush=True)
-            _resp = requests.post(
+            }).encode("utf-8")
+            _req = _urllib_request.Request(
                 CLAUDE_API_URL,
-                json=_payload,
+                data=_payload,
                 headers={
+                    "Content-Type": "application/json",
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01"
                 },
-                timeout=(10, 90)
+                method="POST"
             )
-            _status = _resp.status_code
-            print(f"[Claude] got response status={_status} len={len(_resp.text)}", flush=True)
-            data = _resp.json()
+            with _urllib_request.urlopen(_req, timeout=30) as _resp:
+                _status = _resp.status
+                data = json.loads(_resp.read().decode("utf-8"))
             print(f"[Claude] status={_status} attempt={attempt}", flush=True)
             if "content" not in data:
                 print(f"[Claude] error: {data}", flush=True)
@@ -1465,10 +1466,12 @@ def api_test_claude():
     headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
 
     # בדיקה ישירה
+    _raw = json.dumps(payload).encode("utf-8")
     start = time.time()
     try:
-        _r = requests.post(CLAUDE_API_URL, json=payload, headers=headers, timeout=30)
-        direct = {"status": _r.status_code, "elapsed": round(time.time() - start, 2)}
+        _req = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
+        with _urllib_request.urlopen(_req, timeout=30) as _r:
+            direct = {"status": _r.status, "elapsed": round(time.time() - start, 2)}
     except Exception as e:
         direct = {"error": str(e), "elapsed": round(time.time() - start, 2)}
 
@@ -1477,8 +1480,9 @@ def api_test_claude():
     def _bg():
         s = time.time()
         try:
-            _r2 = requests.post(CLAUDE_API_URL, json=payload, headers=headers, timeout=30)
-            thread_result[0] = {"status": _r2.status_code, "elapsed": round(time.time() - s, 2)}
+            _req2 = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
+            with _urllib_request.urlopen(_req2, timeout=30) as _r2:
+                thread_result[0] = {"status": _r2.status, "elapsed": round(time.time() - s, 2)}
         except Exception as e:
             thread_result[0] = {"error": str(e), "elapsed": round(time.time() - s, 2)}
     t = threading.Thread(target=_bg, daemon=True)
