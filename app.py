@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import urllib.request as _urllib_request
+import urllib.error as _urllib_error
 import requests
 import json
 import threading
@@ -274,11 +275,6 @@ _CITY_ALIASES = {
     'ר"ג': "רמת גן", "ר.ג": "רמת גן", "רמת-גן": "רמת גן",
     "חולון": "חולון", "בת-ים": "בת ים", 'ב"י': "בת ים",
     'ק"ש': "קריית שמונה", 'כ"ס': "כפר סבא",
-    "תל-מונד": "תל מונד", "בית-שמש": "בית שמש", "בית-שאן": "בית שאן",
-    "ראשל\"צ": "ראשון לציון", "ראשלצ": "ראשון לציון",
-    'ר"ה': "רמת השרון", "רמת-השרון": "רמת השרון",
-    "הוד-השרון": "הוד השרון", "ראש-העין": "ראש העין",
-    "מעלה-אדומים": "מעלה אדומים",
 }
 
 # ערים ישראליות עם שם של שתי מילים
@@ -290,11 +286,6 @@ _TWO_WORD_CITIES = {
     "באר שבע", "רמת השרון", "גבעתיים", "בני ברק", "כפר נהר",
     "מודיעין עילית", "ביתר עילית", "אלעד", "אור עקיבא", "יבנה",
     "נשר", "טירת כרמל", "קרית שמונה", "מעלות תרשיחא",
-    "תל מונד", "כפר קאסם", "כפר ברא", "גבעת זאב", "מעלה אדומים",
-    "כוכב יאיר", "צור יגאל", "צור הדסה", "גני תקווה", "שוהם",
-    "קרית אונו", "קרית גת", "קרית מלאכי", "קרית ביאליק",
-    "רמת ישי", "כפר תבור", "בית שאן", "בית שמש", "קרית טבעון",
-    "פרדס חנה", "פרדס כץ", "זכרון יעקב", "עין גנים",
 }
 
 def normalize_city(city):
@@ -569,12 +560,14 @@ def send_message(phone, text):
     try:
         url = f"{GREEN_API_URL}/sendMessage/{GREEN_API_TOKEN}"
         chat_id = phone if "@" in phone else f"{phone}@c.us"
-        sm_resp = requests.post(url, json={"chatId": chat_id, "message": text}, timeout=15)
-        ok = sm_resp.status_code == 200
-        if ok:
-            print(f"[GreenAPI] sent to {phone} ({len(text)} chars)", flush=True)
-        else:
-            print(f"[GreenAPI] send failed: {sm_resp.status_code} {sm_resp.text[:200]}", flush=True)
+        _sm_raw = json.dumps({"chatId": chat_id, "message": text}).encode("utf-8")
+        _sm_req = _urllib_request.Request(url, data=_sm_raw,
+                                          headers={"Content-Type": "application/json"},
+                                          method="POST")
+        with _urllib_request.urlopen(_sm_req, timeout=10) as _sm_resp:
+            ok = _sm_resp.status == 200
+        if not ok:
+            print(f"[GreenAPI] send failed: {_sm_resp.status}", flush=True)
         return ok
     except Exception as e:
         print(f"[GreenAPI] error: {e}", flush=True)
@@ -772,29 +765,38 @@ def transcribe_audio_groq(audio_url):
         print("[Groq] חסר GROQ_API_KEY", flush=True)
         return None
     try:
-        dl_resp = requests.get(audio_url, timeout=15)
-        if dl_resp.status_code != 200:
-            print(f"[Groq] download failed: {dl_resp.status_code}", flush=True)
-            return None
-        audio_data = dl_resp.content
-        gr_resp = requests.post(
-            GROQ_WHISPER_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            files={"file": ("audio.ogg", audio_data, "audio/ogg")},
-            data={
+        # הורד את הקובץ
+        _dl_req = _urllib_request.Request(audio_url)
+        with _urllib_request.urlopen(_dl_req, timeout=15) as _dl_resp:
+            if _dl_resp.status != 200:
+                print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
+                return None
+            audio_data = _dl_resp.read()
+        # שלח ל-Groq Whisper כ-multipart
+        _body, _ct = _build_multipart(
+            fields={
                 "model": "whisper-large-v3-turbo",
                 "language": "he",
                 "response_format": "text",
                 "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
             },
-            timeout=30
+            files={"file": ("audio.ogg", audio_data, "audio/ogg")}
         )
-        if gr_resp.status_code == 200:
-            text = gr_resp.text.strip()
+        _gr_req = _urllib_request.Request(
+            GROQ_WHISPER_URL,
+            data=_body,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode()},
+            method="POST"
+        )
+        try:
+            with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
+                text = _gr_resp.read().decode("utf-8").strip()
             print(f"[Groq] transcribed: {text[:60]}", flush=True)
             return text
-        print(f"[Groq] HTTP {gr_resp.status_code}: {gr_resp.text[:300]}", flush=True)
-        return None
+        except _urllib_error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")[:300]
+            print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
+            return None
     except Exception as e:
         print(f"[Groq] exception: {e}", flush=True)
         return None
@@ -898,6 +900,7 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
             emails    = pending["emails"]
             client_name = call_data.get("name", "")
 
+            # ציאת "לא" / לא רוצה לחפש
             if is_no or any(x in answer_lower for x in ["אין", "ללא", "לא יודע", "פתח ידנית"]):
                 with state_lock:
                     pending_wizenet_confirm.pop(phone, None)
@@ -907,23 +910,16 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                 add_to_history(phone, "bot", "[קריאה נפתחה — שיחה חדשה]", "text")
                 return "פותח קריאה ידנית ✅"
 
-            # חלץ טלפון מהתשובה
+            # חלץ טלפון ועיר מהתשובה
             phone_match = _re.search(r"0[5-9]\d{8}", answer.replace("-","").replace(" ",""))
             found_phone = phone_match.group() if phone_match else None
+            city_from_answer, _ = extract_city_and_street(answer)
 
-            # חלץ עיר מהתשובה ומהכתובת המקורית
-            city_from_answer, street_from_answer = extract_city_and_street(answer)
-            existing_city, existing_street = extract_city_and_street(call_data.get("address", ""))
+            # שלב עם נתונים קיימים מה-call_data
+            existing_city, _ = extract_city_and_street(call_data.get("address",""))
             city = city_from_answer or existing_city
             if found_phone:
                 call_data["contact_phone"] = found_phone
-
-            # זהה אם הקלט החדש הוא שם (לא טלפון ולא כתובת ברורה)
-            answer_clean = answer.strip()
-            is_name_input = (not found_phone and not city_from_answer
-                            and len(answer_clean) >= 2
-                            and not any(c.isdigit() for c in answer_clean)
-                            and "כתובת" not in answer_lower and "תציע" not in answer_lower and "חפש" not in answer_lower)
 
             # חיפוש משולב — כל השילובים
             results = []
@@ -935,32 +931,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         seen_cids.add(r["cid"])
                         results.append(r)
 
-            # 1. טלפון
             if found_phone:
                 _add(get_wizenet_client_by_phone(found_phone))
-
-            # 2. שם חדש שהבוס נתן
-            if not results and is_name_input:
-                _add(get_wizenet_client_by_name(answer_clean, city=city))
-
-            # 3. שם מקורי + עיר חדשה
-            if not results and client_name and city:
+            if not results and client_name:
                 _add(get_wizenet_client_by_name(client_name, city=city))
-
-            # 4. כתובת מהקלט + כתובת מהקריאה — חפש לפי רחוב+עיר
-            search_street = street_from_answer or existing_street
-            search_city = city
-            if not results and search_street and search_city:
-                _add(_wizenet_search(ccompany=search_street, ccity=search_city))
-
-            # 5. בקשה לחפש לפי כתובת מהקריאה
-            if not results and any(x in answer_lower for x in ["כתובת", "תציע", "חפש"]):
-                if existing_street and existing_city:
-                    _add(_wizenet_search(ccompany=existing_street, ccity=existing_city))
-                if not results and existing_city:
-                    _add(_wizenet_search(ccity=existing_city))
-
-            # 6. fallback — עיר בלבד
             if not results and city:
                 _add(_wizenet_search(ccity=city))
 
@@ -974,22 +948,25 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "wiz_name": results[0]["name"]
                     }
-                return f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
+                confirm_msg = f"מצאתי לקוח: *{results[0]['name']}*\nזה הכרטיס הנכון? (כן / לא)"
+                return confirm_msg
             elif len(results) > 1:
                 options_str = "\n".join([f"{i+1}. {r['name']}" + (f" ({r['city']})" if r.get('city') else "") for i, r in enumerate(results[:5])])
+                confirm_msg = f"מצאתי כמה לקוחות:\n{options_str}\n\nאיזה מספר נכון? או 'לא'"
                 with state_lock:
                     pending_wizenet_confirm[phone] = {
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "wiz_options": results[:5]
                     }
-                return f"מצאתי כמה לקוחות:\n{options_str}\n\nאיזה מספר נכון? או 'לא'"
+                return confirm_msg
             else:
+                # לא נמצא בכלל — שאל שוב או פתח ידנית
                 with state_lock:
                     pending_wizenet_confirm[phone] = {
                         "call_data": call_data, "emails": emails,
                         "client_phone": phone, "awaiting_details": True
                     }
-                return "לא מצאתי 🔍 נסה שם אחר / טלפון / עיר, או כתוב 'לא' לפתיחה ידנית"
+                return "לא מצאתי 🔍 נסה טלפון אחר / עיר, או כתוב 'לא' לפתיחה ידנית"
 
         # בחירה מרשימה (1-5)
         wiz_options = pending.get("wiz_options")
@@ -1465,8 +1442,9 @@ def api_test_claude():
     }
     headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
 
-    # בדיקה ישירה
     _raw = json.dumps(payload).encode("utf-8")
+
+    # בדיקה ישירה
     start = time.time()
     try:
         _req = _urllib_request.Request(CLAUDE_API_URL, data=_raw, headers=headers, method="POST")
@@ -1490,6 +1468,48 @@ def api_test_claude():
     t.join(timeout=35)
 
     return jsonify({"direct": direct, "thread": thread_result[0]})
+
+@app.route("/api/test-wizenet")
+def api_test_wizenet():
+    import socket as _sock
+    results = {"timestamp": il_now().strftime("%Y-%m-%d %H:%M:%S"), "server": "Render.com"}
+    try:
+        my_ip_req = _urllib_request.Request("https://api.ipify.org?format=json", method="GET")
+        with _urllib_request.urlopen(my_ip_req, timeout=5) as r:
+            results["outbound_ip"] = json.loads(r.read().decode())["ip"]
+    except Exception as e:
+        results["outbound_ip"] = f"error: {e}"
+    host = "aquapoolco.wizenet.co.il"
+    try:
+        results["dns_resolve"] = _sock.getaddrinfo(host, 443)[0][4][0]
+    except Exception as e:
+        results["dns_resolve"] = f"error: {e}"
+    start = time.time()
+    try:
+        s = _sock.create_connection((host, 443), timeout=10)
+        s.close()
+        results["tcp_connect"] = {"ok": True, "elapsed": round(time.time() - start, 2)}
+    except Exception as e:
+        results["tcp_connect"] = {"ok": False, "error": str(e), "elapsed": round(time.time() - start, 2)}
+    start2 = time.time()
+    try:
+        test_payload = json.dumps({"ccell": "0500000000"}).encode("utf-8")
+        req = _urllib_request.Request(
+            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
+            data=test_payload,
+            headers={**_wizenet_headers(), "Content-Type": "application/json"},
+            method="POST"
+        )
+        with _urllib_request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8")
+            results["api_call"] = {
+                "ok": True, "status": resp.status,
+                "response_preview": body[:200],
+                "elapsed": round(time.time() - start2, 2)
+            }
+    except Exception as e:
+        results["api_call"] = {"ok": False, "error": str(e), "elapsed": round(time.time() - start2, 2)}
+    return jsonify(results)
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
@@ -1846,13 +1866,15 @@ def send_email_notification(call_data, emails):
     <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">🕐 נפתח</td><td style="padding:8px">{call_data.get('opened_at','-')}</td></tr>
   </table>
 </div>"""
-        rs_resp = requests.post(
+        _rs_raw = json.dumps({"from": RESEND_FROM, "to": emails, "subject": subject, "html": body}).encode("utf-8")
+        _rs_req = _urllib_request.Request(
             "https://api.resend.com/emails",
-            json={"from": RESEND_FROM, "to": emails, "subject": subject, "html": body},
-            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
-            timeout=15
+            data=_rs_raw,
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            method="POST"
         )
-        print(f"[Resend] status={rs_resp.status_code}", flush=True)
+        with _urllib_request.urlopen(_rs_req, timeout=10) as _rs_resp:
+            print(f"[Resend] status={_rs_resp.status}", flush=True)
     except Exception as e:
         print(f"[Resend] error: {e}", flush=True)
 
@@ -1880,15 +1902,19 @@ def _wizenet_search(ccell="", ccompany="", ccity=""):
     if not payload:
         return []
     try:
-        resp = requests.post(
+        _wiz_raw = json.dumps(payload).encode("utf-8")
+        _wiz_req = _urllib_request.Request(
             f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            json=payload,
-            headers=_wizenet_headers(),
-            timeout=15
+            data=_wiz_raw,
+            headers={**_wizenet_headers(), "Content-Type": "application/json"},
+            method="POST"
         )
-        print(f"[Wizenet/Search] payload={payload} status={resp.status_code} response={resp.text[:300]}", flush=True)
-        if resp.status_code == 200 and resp.text.strip().startswith("["):
-            data = resp.json()
+        with _urllib_request.urlopen(_wiz_req, timeout=10) as _wiz_resp:
+            _wiz_text = _wiz_resp.read().decode("utf-8")
+            _wiz_status = _wiz_resp.status
+        print(f"[Wizenet/Search] payload={payload} status={_wiz_status} response={_wiz_text[:300]}", flush=True)
+        if _wiz_status == 200 and _wiz_text.strip().startswith("["):
+            data = json.loads(_wiz_text)
             _WIZ_PLACEHOLDER = {"לא פעיל", "ללא שם", "לא ידוע", "מפקח", "אנונימי",
                                  "אלמוני", "לא", "לא מוכר", "unknown", "-", "test", "בדיקה", "לא רלוונטי"}
             results = []
@@ -1975,15 +2001,19 @@ def open_wizenet_call(call_data):
         }
         if tech_name:
             payload["TechName"] = tech_name
-        resp = requests.post(
+        _ow_raw = json.dumps(payload).encode("utf-8")
+        _ow_req = _urllib_request.Request(
             WIZENET_URL,
-            json=payload,
-            headers=_wizenet_headers(),
-            timeout=15
+            data=_ow_raw,
+            headers={**_wizenet_headers(), "Content-Type": "application/json"},
+            method="POST"
         )
-        print(f"[Wizenet] status={resp.status_code} response={resp.text[:300]}", flush=True)
-        if resp.status_code == 200 and resp.text.strip().startswith("["):
-            data = resp.json()
+        with _urllib_request.urlopen(_ow_req, timeout=10) as _ow_resp:
+            _ow_text = _ow_resp.read().decode("utf-8")
+            _ow_status = _ow_resp.status
+        print(f"[Wizenet] status={_ow_status} response={_ow_text[:300]}", flush=True)
+        if _ow_status == 200 and _ow_text.strip().startswith("["):
+            data = json.loads(_ow_text)
             if isinstance(data, list) and data:
                 status = data[0].get("Status")
                 call_id = data[0].get("CALLID")
@@ -1993,7 +2023,7 @@ def open_wizenet_call(call_data):
                 else:
                     print(f"[Wizenet] ❌ שגיאה: {data[0].get('message')}", flush=True)
         else:
-            print(f"[Wizenet] HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+            print(f"[Wizenet] HTTP {_ow_status}: {_ow_text[:200]}", flush=True)
     except Exception as e:
         print(f"[Wizenet] exception: {e}", flush=True)
     return None
@@ -2012,7 +2042,10 @@ def fire_webhook(call_data):
                 if ":" in line:
                     k,v = line.split(":",1)
                     headers[k.strip()] = v.strip()
-        requests.post(url, json=call_data, headers=headers, timeout=8)
+        _fw_raw = json.dumps(call_data).encode("utf-8")
+        _fw_req = _urllib_request.Request(url, data=_fw_raw, headers=headers, method="POST")
+        with _urllib_request.urlopen(_fw_req, timeout=8) as _:
+            pass
         print(f"[Webhook] fired to {url}", flush=True)
     except Exception as e:
         print(f"[Webhook] error: {e}", flush=True)
@@ -2147,6 +2180,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-hdr btn-green" onclick="enableAll()">⚡ לכולם</button>
     <button class="btn-hdr btn-red" onclick="disableAll()">⏸ כבה</button>
     <button class="btn-hdr" style="background:var(--s2);color:var(--muted);border:1px solid var(--border)" onclick="openSettings()">⚙️ הגדרות</button>
+    <button class="btn-hdr" style="background:#e67e22;color:#fff;border:none" onclick="testWizenet()">🔌 בדיקת ויזנט</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -2471,6 +2505,27 @@ async function saveSettings(){
   closeSettings();
   alert('ההגדרות נשמרו');
   await load();
+}
+async function testWizenet(){
+  const btn=event.target;btn.disabled=true;btn.textContent='⏳ בודק...';
+  try{
+    const r=await api('/api/test-wizenet');const d=await r.json();
+    const ip=d.outbound_ip||'?';
+    const dns=d.dns_resolve||'?';
+    const tcp=d.tcp_connect||{};
+    const apiC=d.api_call||{};
+    let msg='בדיקת חיבור Wizenet\n';
+    msg+='━━━━━━━━━━━━━━━━━━━━━━\n';
+    msg+='זמן: '+d.timestamp+'\n';
+    msg+='IP יוצא: '+ip+'\n';
+    msg+='DNS: '+dns+'\n';
+    msg+='TCP (port 443): '+(tcp.ok?'מחובר ('+tcp.elapsed+'s)':'נכשל — '+tcp.error)+'\n';
+    msg+='API call: '+(apiC.ok?'תקין (status '+apiC.status+', '+apiC.elapsed+'s)':'נכשל — '+apiC.error)+'\n';
+    if(!tcp.ok||!apiC.ok) msg+='\nהחיבור עדיין חסום!';
+    else msg+='\nהחיבור תקין!';
+    alert(msg);
+  }catch(e){alert('שגיאה: '+e);}
+  btn.disabled=false;btn.textContent='🔌 בדיקת ויזנט';
 }
 load();setInterval(load,5000);
 </script>
