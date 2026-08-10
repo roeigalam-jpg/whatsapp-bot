@@ -1092,12 +1092,10 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
 
         if search_phone:
             _add_results(get_wizenet_client_by_phone(normalize_il_phone(search_phone)))
-        if search_name:
-            _add_results(get_wizenet_client_by_name(search_name, city=search_city))
-        if not results and search_street and search_city:
+        if not results and search_name:
+            _add_results(_wizenet_search(ccompany=search_name, ccity=search_city))
+        if not results and search_street and search_city and search_street != search_name:
             _add_results(_wizenet_search(ccompany=search_street, ccity=search_city))
-        if not results and search_city:
-            _add_results(_wizenet_search(ccity=search_city))
 
         print(f"[SearchClient] {len(results)} results", flush=True)
 
@@ -2035,7 +2033,7 @@ _wiz_session.headers.update({
     "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
 })
 
-def _wizenet_request(url, payload, timeout=12):
+def _wizenet_request(url, payload, timeout=6):
     """POST ל-Wizenet דרך requests.Session — עוקף Cloudflare"""
     headers = _wizenet_headers()
     try:
