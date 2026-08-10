@@ -6,6 +6,10 @@ import hmac
 import urllib.request as _urllib_request
 import urllib.error as _urllib_error
 import requests
+
+_opener = _urllib_request.build_opener()
+_opener.addheaders = [("User-Agent", "AquapoolcoBot/1.0")]
+_urllib_request.install_opener(_opener)
 import json
 import threading
 import time
@@ -798,7 +802,7 @@ def transcribe_audio_groq(audio_url):
         _gr_req = _urllib_request.Request(
             GROQ_WHISPER_URL,
             data=_body,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode()},
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode(), "User-Agent": "AquapoolcoBot/1.0"},
             method="POST"
         )
         try:
@@ -1542,7 +1546,7 @@ def api_test_groq():
         )
         _tg_req = _urllib_request.Request(
             GROQ_WHISPER_URL, data=test_body,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": test_ct.decode()},
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": test_ct.decode(), "User-Agent": "AquapoolcoBot/1.0"},
             method="POST"
         )
         try:
