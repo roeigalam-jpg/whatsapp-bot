@@ -131,6 +131,7 @@ pending_messages   = {}  # phone → (body_text, msg_type, audio_url) — הוד
 PROCESSING_TIMEOUT = 60  # שניות מקסימום לנעילה
 # קריאות שממתינות לאישור לקוח — phone → call_data
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
+boss_found_client = {}  # phone → {"cid": ..., "name": ..., "city": ...} — לקוח שנמצא בחיפוש אחרון
 
 # ─── Firestore שמירה/טעינה ────────────────────────────────────
 _last_save_ts = 0  # timestamp של השמירה האחרונה
@@ -497,7 +498,8 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 
 יכולות: ענה על כל שאלה — בריכות, עסקים, טכנולוגיה, הכל.
 
-מאגר לקוחות: אתה מחובר למערכת Wizenet. כשרועי מבקש לחפש לקוח — השתמש ב-search_client (למטה). לעולם אל תמציא שמות לקוחות מהראש — רק תוצאות שמגיעות מהמערכת הן אמיתיות.
+מאגר לקוחות: אתה מחובר למערכת Wizenet. כשרועי מבקש לחפש לקוח — השתמש ב-search_client (למטה). לעולם אל תמציא שמות לקוחות מהראש — רק תוצאות שמגיעות מהמערכת (בהודעות שמתחילות ב-🔍) הן אמיתיות.
+אם כבר מצאת לקוח (הודעת 🔍 בהיסטוריה) ורועי אישר — אל תחפש שוב, המערכת זוכרת את הלקוח. פשוט תמשיך לפתוח קריאה.
 
 חוקי ברזל:
 1. שיחה כללית — ענה ישירות, אל תפתח קריאה
@@ -1091,11 +1093,23 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
         print(f"[SearchClient] {len(results)} results", flush=True)
 
         if not results:
-            return f"🔍 לא נמצאו לקוחות" + (f" בכתובת {search_address}" if search_address else "") + (f" בשם {search_name}" if search_name else "")
+            with state_lock:
+                boss_found_client.pop(phone, None)
+            msg = "🔍 לא נמצאו לקוחות"
+            if search_address:
+                msg += f" בכתובת {search_address}"
+            if search_name:
+                msg += f" בשם {search_name}"
+            msg += "\nנסה לחפש לפי שם הלקוח"
+            return msg
         elif len(results) == 1:
             r = results[0]
+            with state_lock:
+                boss_found_client[phone] = r.copy()
             return f"🔍 נמצא לקוח: *{r['name']}*" + (f" ({r['city']})" if r.get('city') else "") + f"\nCID: {r['cid']}"
         else:
+            with state_lock:
+                boss_found_client[phone] = results[0].copy()
             lines = [f"🔍 נמצאו {len(results)} לקוחות:"]
             for i, r in enumerate(results[:8]):
                 lines.append(f"{i+1}. *{r['name']}*" + (f" ({r['city']})" if r.get('city') else ""))
@@ -1134,6 +1148,13 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
 
         save_data()
         _call_copy = service_calls[-1].copy()
+
+        # אם יש לקוח שנמצא בחיפוש אחרון — השתמש ב-CID שלו
+        with state_lock:
+            _found = boss_found_client.pop(phone, None)
+        if _found and is_boss:
+            _call_copy["_wizenet_cid"] = _found["cid"]
+            print(f"[SearchClient] using saved CID={_found['cid']} name={_found['name']}", flush=True)
 
         # Wizenet + Webhook + מייל — הכל בthread נפרד, לא חוסם
         with state_lock:
