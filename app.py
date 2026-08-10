@@ -2088,20 +2088,18 @@ def _wizenet_headers():
         "Accept": "application/json",
     }
 
-_wiz_session = requests.Session()
-_wiz_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
-})
-
 def _wizenet_request(url, payload, timeout=6):
-    """POST ל-Wizenet דרך requests.Session — עוקף Cloudflare"""
+    """POST ל-Wizenet דרך urllib — עם Chrome User-Agent לעקיפת Cloudflare"""
     headers = _wizenet_headers()
+    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    headers["Accept"] = "application/json, text/plain, */*"
+    headers["Accept-Language"] = "he-IL,he;q=0.9,en;q=0.8"
     try:
-        resp = _wiz_session.post(url, json=payload, headers=headers, timeout=(3, timeout))
-        _status, _text = resp.status_code, resp.text
-        resp.close()
+        _data = json.dumps(payload).encode("utf-8")
+        _req = _urllib_request.Request(url, data=_data, headers=headers, method="POST")
+        with _urllib_request.urlopen(_req, timeout=timeout) as _resp:
+            _text = _resp.read().decode("utf-8", errors="replace")
+            _status = _resp.status
         print(f"[Wizenet/Req] url={url.split('?')[-1]} status={_status} len={len(_text)}", flush=True)
         return _status, _text
     except Exception as e:
