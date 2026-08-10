@@ -1555,20 +1555,17 @@ def api_test_wizenet():
         results["tcp_connect"] = {"ok": False, "error": str(e), "elapsed": round(time.time() - start, 2)}
     start2 = time.time()
     try:
-        test_payload = json.dumps({"ccell": "0500000000"}).encode("utf-8")
-        req = _urllib_request.Request(
+        status, body = _wizenet_request(
             f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            data=test_payload,
-            headers={**_wizenet_headers(), "Content-Type": "application/json"},
-            method="POST"
+            {"ccell": "0500000000"}, timeout=15
         )
-        with _urllib_request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8")
-            results["api_call"] = {
-                "ok": True, "status": resp.status,
-                "response_preview": body[:200],
-                "elapsed": round(time.time() - start2, 2)
-            }
+        results["api_call"] = {
+            "ok": status == 200, "status": status,
+            "response_preview": body[:200],
+            "elapsed": round(time.time() - start2, 2)
+        }
+        if status != 200:
+            results["api_call"]["error"] = f"HTTP {status}: {body[:100]}"
     except Exception as e:
         results["api_call"] = {"ok": False, "error": str(e), "elapsed": round(time.time() - start2, 2)}
     return jsonify(results)
@@ -1991,6 +1988,24 @@ def _wizenet_headers():
         "Accept": "application/json",
     }
 
+_wiz_session = requests.Session()
+_wiz_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
+})
+
+def _wizenet_request(url, payload, timeout=12):
+    """POST ל-Wizenet דרך requests.Session — עוקף Cloudflare"""
+    headers = _wizenet_headers()
+    try:
+        resp = _wiz_session.post(url, json=payload, headers=headers, timeout=timeout)
+        print(f"[Wizenet/Req] url={url.split('?')[-1]} status={resp.status_code} len={len(resp.text)}", flush=True)
+        return resp.status_code, resp.text
+    except Exception as e:
+        print(f"[Wizenet/Req] exception: {type(e).__name__}: {e}", flush=True)
+        return 0, ""
+
 def _wizenet_search(ccell="", ccompany="", ccity=""):
     """חיפוש לקוח ב-Wizenet — מחזיר רשימת תוצאות"""
     if not WIZENET_API_TOKEN:
@@ -2005,16 +2020,9 @@ def _wizenet_search(ccell="", ccompany="", ccity=""):
     if not payload:
         return []
     try:
-        _wiz_raw = json.dumps(payload).encode("utf-8")
-        _wiz_req = _urllib_request.Request(
-            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist",
-            data=_wiz_raw,
-            headers={**_wizenet_headers(), "Content-Type": "application/json"},
-            method="POST"
+        _wiz_status, _wiz_text = _wizenet_request(
+            f"{WIZENET_BASE_URL}/?func=wizeApp_retClientExist", payload
         )
-        with _urllib_request.urlopen(_wiz_req, timeout=10) as _wiz_resp:
-            _wiz_text = _wiz_resp.read().decode("utf-8")
-            _wiz_status = _wiz_resp.status
         print(f"[Wizenet/Search] payload={payload} status={_wiz_status} response={_wiz_text[:300]}", flush=True)
         if _wiz_status == 200 and _wiz_text.strip().startswith("["):
             data = json.loads(_wiz_text)
@@ -2104,16 +2112,7 @@ def open_wizenet_call(call_data):
         }
         if tech_name:
             payload["TechName"] = tech_name
-        _ow_raw = json.dumps(payload).encode("utf-8")
-        _ow_req = _urllib_request.Request(
-            WIZENET_URL,
-            data=_ow_raw,
-            headers={**_wizenet_headers(), "Content-Type": "application/json"},
-            method="POST"
-        )
-        with _urllib_request.urlopen(_ow_req, timeout=10) as _ow_resp:
-            _ow_text = _ow_resp.read().decode("utf-8")
-            _ow_status = _ow_resp.status
+        _ow_status, _ow_text = _wizenet_request(WIZENET_URL, payload)
         print(f"[Wizenet] status={_ow_status} response={_ow_text[:300]}", flush=True)
         if _ow_status == 200 and _ow_text.strip().startswith("["):
             data = json.loads(_ow_text)
