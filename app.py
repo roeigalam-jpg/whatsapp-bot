@@ -128,7 +128,7 @@ last_bot_msg_time = {}
 reminder_timers   = {}
 processing_phones = {}   # phone → timestamp התחלת עיבוד
 pending_messages   = {}  # phone → (body_text, msg_type, audio_url) — הודעה שהגיעה בזמן עיבוד
-PROCESSING_TIMEOUT = 60  # שניות מקסימום לנעילה
+PROCESSING_TIMEOUT = 30  # שניות מקסימום לנעילה
 # קריאות שממתינות לאישור לקוח — phone → call_data
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
 boss_found_client = {}  # phone → {"cid": ..., "name": ..., "city": ...} — לקוח שנמצא בחיפוש אחרון
@@ -2081,7 +2081,6 @@ def _wizenet_headers():
         auth = token
     else:
         auth = f"Bearer {token}"
-    print(f"[Wizenet] Auth: {auth[:40]}", flush=True)
     return {
         "Authorization": auth,
         "Content-Type": "application/json",
@@ -2100,9 +2099,11 @@ def _wizenet_request(url, payload, timeout=6):
     """POST ל-Wizenet דרך requests.Session — עוקף Cloudflare"""
     headers = _wizenet_headers()
     try:
-        resp = _wiz_session.post(url, json=payload, headers=headers, timeout=timeout)
-        print(f"[Wizenet/Req] url={url.split('?')[-1]} status={resp.status_code} len={len(resp.text)}", flush=True)
-        return resp.status_code, resp.text
+        resp = _wiz_session.post(url, json=payload, headers=headers, timeout=(3, timeout))
+        _status, _text = resp.status_code, resp.text
+        resp.close()
+        print(f"[Wizenet/Req] url={url.split('?')[-1]} status={_status} len={len(_text)}", flush=True)
+        return _status, _text
     except Exception as e:
         print(f"[Wizenet/Req] exception: {type(e).__name__}: {e}", flush=True)
         return 0, ""
