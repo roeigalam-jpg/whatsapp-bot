@@ -497,7 +497,7 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 
 יכולות: ענה על כל שאלה — בריכות, עסקים, טכנולוגיה, הכל.
 
-מאגר לקוחות: אתה מחובר למערכת Wizenet — חיפוש לקוח רץ אוטומטית ברקע לפי שם/כתובת/טלפון. אל תגיד שאתה לא מחובר. אל תגיד שאינך יכול לאתר לפי כתובת. החיפוש קורה בעצמו.
+מאגר לקוחות: אתה מחובר למערכת Wizenet. כשרועי מבקש לחפש לקוח — השתמש ב-search_client (למטה). לעולם אל תמציא שמות לקוחות מהראש — רק תוצאות שמגיעות מהמערכת הן אמיתיות.
 
 חוקי ברזל:
 1. שיחה כללית — ענה ישירות, אל תפתח קריאה
@@ -506,8 +506,13 @@ BOSS_SYSTEM_PROMPT = """אתה גל — העוזר האישי של רועי.
 4. אל תשאל שוב על מידע שכבר קיבלת
 5. כל קריאה עצמאית — אל תערב פרטים מקריאות קודמות
 6. שלח הודעה רק אם רועי מבקש עם מספר ותוכן
+7. לעולם לא להמציא או לנחש שמות לקוחות — רק תוצאות חיפוש אמיתיות מויזנט
 
-פתיחת קריאה — מיד כשיש שם + תיאור:
+חיפוש לקוח — כשרועי מבקש לחפש, או כשצריך לזהות לקוח לפני פתיחת קריאה:
+{"action":"search_client","name":"...","phone":"...","address":"..."}
+(מלא את השדות שיש לך, השאר ריק מה שאין)
+
+פתיחת קריאה — מיד כשיש שם לקוח + תיאור:
 {"action":"open_call","name":"...","address":"...","call_type":"...","description":"...","contact_phone":"-","tech_name":""}
 
 call_type: פרויקט/אבזור/גמר→"פרויקטים" | בינוי/בנייה/שיפוץ/מים/תחזוקה/תקלה→"בינוי" | חשמל→"חשמל"
@@ -1058,6 +1063,43 @@ def handle_message(phone, body, msg_type="text", audio_url=None):
 
     result = ask_claude(history, body, msg_type, is_boss=is_boss, phone=phone)
     action = result.get("action", "continue")
+
+    if action == "search_client" and is_boss:
+        search_name = (result.get("name") or "").strip()
+        search_phone = (result.get("phone") or "").strip()
+        search_address = (result.get("address") or "").strip()
+        search_city, search_street = extract_city_and_street(search_address)
+        print(f"[SearchClient] name='{search_name}' phone='{search_phone}' address='{search_address}' city='{search_city}' street='{search_street}'", flush=True)
+
+        results = []
+        seen_cids = set()
+        def _add_results(lst):
+            for r in (lst if isinstance(lst, list) else ([lst] if lst else [])):
+                if r and r.get("cid") not in seen_cids:
+                    seen_cids.add(r["cid"])
+                    results.append(r)
+
+        if search_phone:
+            _add_results(get_wizenet_client_by_phone(normalize_il_phone(search_phone)))
+        if search_name:
+            _add_results(get_wizenet_client_by_name(search_name, city=search_city))
+        if not results and search_street and search_city:
+            _add_results(_wizenet_search(ccompany=search_street, ccity=search_city))
+        if not results and search_city:
+            _add_results(_wizenet_search(ccity=search_city))
+
+        print(f"[SearchClient] {len(results)} results", flush=True)
+
+        if not results:
+            return f"🔍 לא נמצאו לקוחות" + (f" בכתובת {search_address}" if search_address else "") + (f" בשם {search_name}" if search_name else "")
+        elif len(results) == 1:
+            r = results[0]
+            return f"🔍 נמצא לקוח: *{r['name']}*" + (f" ({r['city']})" if r.get('city') else "") + f"\nCID: {r['cid']}"
+        else:
+            lines = [f"🔍 נמצאו {len(results)} לקוחות:"]
+            for i, r in enumerate(results[:8]):
+                lines.append(f"{i+1}. *{r['name']}*" + (f" ({r['city']})" if r.get('city') else ""))
+            return "\n".join(lines)
 
     if action == "open_call":
         # וולידציות — רק ללקוחות, לא לבוס
