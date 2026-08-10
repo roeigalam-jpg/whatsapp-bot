@@ -760,19 +760,32 @@ def _build_multipart(fields, files):
     return body, b"multipart/form-data; boundary=" + boundary
 
 def transcribe_audio_groq(audio_url):
-    """תמלול הקלטה קולית עם Groq Whisper — חינמי, תומך עברית"""
+    """תמלול הקלטה קולית עם Groq Whisper"""
     if not GROQ_API_KEY:
         print("[Groq] חסר GROQ_API_KEY", flush=True)
         return None
+    print(f"[Groq] downloading audio from: {audio_url[:120]}", flush=True)
     try:
-        # הורד את הקובץ
-        _dl_req = _urllib_request.Request(audio_url)
-        with _urllib_request.urlopen(_dl_req, timeout=15) as _dl_resp:
+        _dl_req = _urllib_request.Request(audio_url, headers={
+            "User-Agent": "AquapoolcoBot/1.0",
+        })
+        with _urllib_request.urlopen(_dl_req, timeout=20) as _dl_resp:
             if _dl_resp.status != 200:
                 print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
                 return None
             audio_data = _dl_resp.read()
-        # שלח ל-Groq Whisper כ-multipart
+        print(f"[Groq] downloaded {len(audio_data)} bytes", flush=True)
+        if len(audio_data) < 100:
+            print(f"[Groq] audio too small, skipping", flush=True)
+            return None
+        content_type = _dl_resp.headers.get("Content-Type", "audio/ogg")
+        ext = "ogg"
+        if "mpeg" in content_type or "mp3" in content_type:
+            ext = "mp3"
+        elif "mp4" in content_type or "m4a" in content_type:
+            ext = "m4a"
+        elif "webm" in content_type:
+            ext = "webm"
         _body, _ct = _build_multipart(
             fields={
                 "model": "whisper-large-v3-turbo",
@@ -780,7 +793,7 @@ def transcribe_audio_groq(audio_url):
                 "response_format": "text",
                 "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
             },
-            files={"file": ("audio.ogg", audio_data, "audio/ogg")}
+            files={"file": (f"audio.{ext}", audio_data, content_type or "audio/ogg")}
         )
         _gr_req = _urllib_request.Request(
             GROQ_WHISPER_URL,
@@ -791,14 +804,17 @@ def transcribe_audio_groq(audio_url):
         try:
             with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
                 text = _gr_resp.read().decode("utf-8").strip()
-            print(f"[Groq] transcribed: {text[:60]}", flush=True)
-            return text
+            print(f"[Groq] transcribed ({len(text)} chars): {text[:80]}", flush=True)
+            return text if text else None
         except _urllib_error.HTTPError as he:
             err_body = he.read().decode("utf-8", errors="ignore")[:300]
             print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
             return None
+    except _urllib_error.HTTPError as he:
+        print(f"[Groq] download HTTP {he.code}: {he.read().decode('utf-8', errors='ignore')[:200]}", flush=True)
+        return None
     except Exception as e:
-        print(f"[Groq] exception: {e}", flush=True)
+        print(f"[Groq] exception: {type(e).__name__}: {e}", flush=True)
         return None
 
 def do_open_wizenet(call_data, emails, client_phone):
@@ -1511,6 +1527,42 @@ def api_test_wizenet():
         results["api_call"] = {"ok": False, "error": str(e), "elapsed": round(time.time() - start2, 2)}
     return jsonify(results)
 
+@app.route("/api/test-groq")
+def api_test_groq():
+    results = {"timestamp": il_now().strftime("%Y-%m-%d %H:%M:%S")}
+    if not GROQ_API_KEY:
+        results["status"] = "error"
+        results["error"] = "GROQ_API_KEY not configured"
+        return jsonify(results)
+    results["api_key"] = GROQ_API_KEY[:8] + "..."
+    try:
+        test_body, test_ct = _build_multipart(
+            fields={"model": "whisper-large-v3-turbo"},
+            files={"file": ("test.txt", b"test", "text/plain")}
+        )
+        _tg_req = _urllib_request.Request(
+            GROQ_WHISPER_URL, data=test_body,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": test_ct.decode()},
+            method="POST"
+        )
+        try:
+            with _urllib_request.urlopen(_tg_req, timeout=10) as _tg_resp:
+                results["api_call"] = {"ok": True, "status": _tg_resp.status}
+        except _urllib_error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")[:300]
+            code = he.code
+            if code == 401:
+                results["api_call"] = {"ok": False, "error": f"API key invalid (401)", "detail": err_body}
+            elif code == 429:
+                results["api_call"] = {"ok": False, "error": f"Rate limited (429)", "detail": err_body}
+            elif code == 400:
+                results["api_call"] = {"ok": True, "note": "API key valid (400 = bad file, expected)", "detail": err_body}
+            else:
+                results["api_call"] = {"ok": False, "error": f"HTTP {code}", "detail": err_body}
+    except Exception as e:
+        results["api_call"] = {"ok": False, "error": str(e)}
+    return jsonify(results)
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     if not AUTH_CONFIGURED:
@@ -1879,14 +1931,19 @@ def send_email_notification(call_data, emails):
         print(f"[Resend] error: {e}", flush=True)
 
 def _wizenet_headers():
-    """Bearer TOKEN כפי שמוריה הנחתה"""
+    """Bearer TOKEN כפי שמוריה הנחתה + User-Agent לעקיפת Cloudflare"""
     token = WIZENET_API_TOKEN.strip()
     if token.lower().startswith("bearer "):
         auth = token
     else:
         auth = f"Bearer {token}"
     print(f"[Wizenet] Auth: {auth[:40]}", flush=True)
-    return {"Authorization": auth, "Content-Type": "application/json"}
+    return {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+        "User-Agent": "AquapoolcoBot/1.0",
+        "Accept": "application/json",
+    }
 
 def _wizenet_search(ccell="", ccompany="", ccity=""):
     """חיפוש לקוח ב-Wizenet — מחזיר רשימת תוצאות"""
@@ -2181,6 +2238,7 @@ input:checked+.tsl:before{transform:translateX(-15px)}
     <button class="btn-hdr btn-red" onclick="disableAll()">⏸ כבה</button>
     <button class="btn-hdr" style="background:var(--s2);color:var(--muted);border:1px solid var(--border)" onclick="openSettings()">⚙️ הגדרות</button>
     <button class="btn-hdr" style="background:#e67e22;color:#fff;border:none" onclick="testWizenet()">🔌 בדיקת ויזנט</button>
+    <button class="btn-hdr" style="background:#8e44ad;color:#fff;border:none" onclick="testGroq()">🎤 בדיקת Groq</button>
   </div>
   <div class="stats">
     <div class="stat">שיחות <b id="s1">0</b></div>
@@ -2526,6 +2584,21 @@ async function testWizenet(){
     alert(msg);
   }catch(e){alert('שגיאה: '+e);}
   btn.disabled=false;btn.textContent='🔌 בדיקת ויזנט';
+}
+async function testGroq(){
+  const btn=event.target;btn.disabled=true;btn.textContent='⏳ בודק...';
+  try{
+    const r=await api('/api/test-groq');const d=await r.json();
+    const apiC=d.api_call||{};
+    let msg='בדיקת Groq Whisper (זיהוי קולי)\n';
+    msg+='━━━━━━━━━━━━━━━━━━━━━━\n';
+    msg+='זמן: '+d.timestamp+'\n';
+    msg+='API Key: '+d.api_key+'\n';
+    if(apiC.ok) msg+='סטטוס: תקין ✅'+(apiC.note?(' — '+apiC.note):'');
+    else msg+='סטטוס: נכשל ❌ — '+apiC.error+(apiC.detail?('\n'+apiC.detail):'');
+    alert(msg);
+  }catch(e){alert('שגיאה: '+e);}
+  btn.disabled=false;btn.textContent='🎤 בדיקת Groq';
 }
 load();setInterval(load,5000);
 </script>
