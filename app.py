@@ -132,6 +132,7 @@ PROCESSING_TIMEOUT = 60  # שניות מקסימום לנעילה
 # קריאות שממתינות לאישור לקוח — phone → call_data
 pending_wizenet_confirm = {}  # מספרים שנמצאים בעיבוד כרגע
 boss_found_client = {}  # phone → {"cid": ..., "name": ..., "city": ...} — לקוח שנמצא בחיפוש אחרון
+_audio_cache = {}  # audio_url → bytes — pre-download for queued messages
 
 # ─── Firestore שמירה/טעינה ────────────────────────────────────
 _last_save_ts = 0  # timestamp של השמירה האחרונה
@@ -775,28 +776,40 @@ def transcribe_audio_groq(audio_url):
     if not GROQ_API_KEY:
         print("[Groq] חסר GROQ_API_KEY", flush=True)
         return None
-    print(f"[Groq] downloading audio from: {audio_url[:120]}", flush=True)
-    try:
-        _dl_req = _urllib_request.Request(audio_url, headers={
-            "User-Agent": "AquapoolcoBot/1.0",
-        })
-        with _urllib_request.urlopen(_dl_req, timeout=20) as _dl_resp:
-            if _dl_resp.status != 200:
-                print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
-                return None
-            audio_data = _dl_resp.read()
-        print(f"[Groq] downloaded {len(audio_data)} bytes", flush=True)
-        if len(audio_data) < 100:
-            print(f"[Groq] audio too small, skipping", flush=True)
+    cached = _audio_cache.pop(audio_url, None)
+    if cached:
+        audio_data = cached
+        content_type = "audio/ogg"
+        print(f"[Groq] using cached audio: {len(audio_data)} bytes", flush=True)
+    else:
+        print(f"[Groq] downloading audio from: {audio_url[:120]}", flush=True)
+        try:
+            _dl_req = _urllib_request.Request(audio_url, headers={"User-Agent": "AquapoolcoBot/1.0"})
+            with _urllib_request.urlopen(_dl_req, timeout=20) as _dl_resp:
+                if _dl_resp.status != 200:
+                    print(f"[Groq] download failed: {_dl_resp.status}", flush=True)
+                    return None
+                audio_data = _dl_resp.read()
+            content_type = _dl_resp.headers.get("Content-Type", "audio/ogg")
+            print(f"[Groq] downloaded {len(audio_data)} bytes", flush=True)
+        except _urllib_error.HTTPError as he:
+            print(f"[Groq] download HTTP {he.code}", flush=True)
             return None
-        content_type = _dl_resp.headers.get("Content-Type", "audio/ogg")
-        ext = "ogg"
-        if "mpeg" in content_type or "mp3" in content_type:
-            ext = "mp3"
-        elif "mp4" in content_type or "m4a" in content_type:
-            ext = "m4a"
-        elif "webm" in content_type:
-            ext = "webm"
+        except Exception as e:
+            print(f"[Groq] download exception: {type(e).__name__}: {e}", flush=True)
+            return None
+    if len(audio_data) < 100:
+        print(f"[Groq] audio too small ({len(audio_data)} bytes), skipping", flush=True)
+        return None
+    content_type = content_type or "audio/ogg"
+    ext = "ogg"
+    if "mpeg" in content_type or "mp3" in content_type:
+        ext = "mp3"
+    elif "mp4" in content_type or "m4a" in content_type:
+        ext = "m4a"
+    elif "webm" in content_type:
+        ext = "webm"
+    try:
         _body, _ct = _build_multipart(
             fields={
                 "model": "whisper-large-v3-turbo",
@@ -804,7 +817,7 @@ def transcribe_audio_groq(audio_url):
                 "response_format": "text",
                 "prompt": "שיחה בעברית על בריכות שחייה, כתובות בישראל, שמות ערים כמו: תל אביב, רמת גן, פתח תקווה, אבן יהודה, כפר סבא, נתניה, חולון, בת ים"
             },
-            files={"file": (f"audio.{ext}", audio_data, content_type or "audio/ogg")}
+            files={"file": (f"audio.{ext}", audio_data, content_type)}
         )
         _gr_req = _urllib_request.Request(
             GROQ_WHISPER_URL,
@@ -812,17 +825,13 @@ def transcribe_audio_groq(audio_url):
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": _ct.decode(), "User-Agent": "AquapoolcoBot/1.0"},
             method="POST"
         )
-        try:
-            with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
-                text = _gr_resp.read().decode("utf-8").strip()
-            print(f"[Groq] transcribed ({len(text)} chars): {text[:80]}", flush=True)
-            return text if text else None
-        except _urllib_error.HTTPError as he:
-            err_body = he.read().decode("utf-8", errors="ignore")[:300]
-            print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
-            return None
+        with _urllib_request.urlopen(_gr_req, timeout=30) as _gr_resp:
+            text = _gr_resp.read().decode("utf-8").strip()
+        print(f"[Groq] transcribed ({len(text)} chars): {text[:80]}", flush=True)
+        return text if text else None
     except _urllib_error.HTTPError as he:
-        print(f"[Groq] download HTTP {he.code}: {he.read().decode('utf-8', errors='ignore')[:200]}", flush=True)
+        err_body = he.read().decode("utf-8", errors="ignore")[:300]
+        print(f"[Groq] HTTP {he.code}: {err_body}", flush=True)
         return None
     except Exception as e:
         print(f"[Groq] exception: {type(e).__name__}: {e}", flush=True)
@@ -1367,6 +1376,16 @@ def process_green_event(body, receipt_id=None):
         if msg_type == "audio":
             print(f"[Audio] msg_data keys: {list(msg_data.keys())}", flush=True)
             print(f"[Audio] audio_url: {audio_url}", flush=True)
+            if audio_url:
+                try:
+                    _dl_req = _urllib_request.Request(audio_url, headers={"User-Agent": "AquapoolcoBot/1.0"})
+                    with _urllib_request.urlopen(_dl_req, timeout=15) as _dl_resp:
+                        _audio_bytes = _dl_resp.read()
+                    if _audio_bytes and len(_audio_bytes) > 100:
+                        _audio_cache[audio_url] = _audio_bytes
+                        print(f"[Audio] pre-downloaded {len(_audio_bytes)} bytes", flush=True)
+                except Exception as _dl_e:
+                    print(f"[Audio] pre-download failed: {_dl_e}", flush=True)
 
         with state_lock:
             # AUTO_BOT=False — לעולם לא מפעיל אוטומטית, אלא אם כן הבוס
